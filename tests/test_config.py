@@ -3,6 +3,7 @@ import os
 import pytest
 from pydantic import ValidationError
 
+from app import main as main_module
 from app.config import Settings
 from app.main import main
 
@@ -62,10 +63,18 @@ def test_invalid_values(monkeypatch, key, value):
         Settings()
 
 
-def test_main_starts(caplog):
+def test_main_starts(caplog, monkeypatch):
+    started = []
+
+    async def fake_run(settings):
+        started.append(settings)
+        return 0
+
+    monkeypatch.setattr(main_module, "run_assistant", fake_run)
     caplog.set_level("INFO")
     assert main([]) == 0
     assert "HomePilot Client" in caplog.text
+    assert len(started) == 1
 
 
 def test_main_rejects_bad_config(monkeypatch, capsys):

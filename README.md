@@ -66,7 +66,10 @@ copy .env.example .env
 | `HOMEPILOT_OUTPUT_DEVICE` | 空（系统默认） | 输出设备索引或名称子串 |
 | `HOMEPILOT_AUDIO_HOSTAPI` | `wasapi` | 优先使用的 Host API：`wasapi` / `mme` / `directsound` |
 | `HOMEPILOT_FRAME_MS` | `20` | 音频分片时长，只能是 20 或 40 毫秒 |
-| `HOMEPILOT_SILENCE_TIMEOUT_S` | `15` | 对话中用户静默多少秒后退出会话 |
+| `HOMEPILOT_SILENCE_TIMEOUT_S` | `15` | 唤醒后或追问时多少秒没人说话就结束会话 |
+| `HOMEPILOT_RESPONSE_TIMEOUT_S` | `20` | 说完后多少秒内没有收到回复就取消本轮 |
+| `HOMEPILOT_PLAYBACK_TAIL_MS` | `300` | 回复播放完后再等多少毫秒才开始听 |
+| `HOMEPILOT_WAKE_SOUND` | `true` | 唤醒时播放提示音 |
 | `HOMEPILOT_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 
 优先级：系统环境变量 > `.env` > 默认值。`.env` 从当前工作目录读取，请在仓库根目录启动。
@@ -79,7 +82,23 @@ copy .env.example .env
 python -m app.main
 ```
 
-启动后会打印版本和当前生效的配置；配置不合法时打印错误并以退出码 2 结束。
+启动后打印版本和当前生效的配置，然后连接服务端、打开麦克风，等待唤醒词「你好小余」。Ctrl+C 退出（有进行中的会话时会先发送 `session.end`）。配置不合法时打印错误并以退出码 2 结束；模型文件缺失、设备打不开时以退出码 1 结束。
+
+服务端尚未上线时，先在另一个窗口运行 `python -m tools.mock_server`（见「WebSocket 通信 / 联调」）。
+
+## 对话流程
+
+`app/conversation.py` 中的 `Conversation` 按状态决定每一帧麦克风音频的去向（半双工）：
+
+| 状态 | 麦克风 | 离开条件 |
+| --- | --- | --- |
+| `IDLE` 等待唤醒 | 只送唤醒词检测 | 唤醒：开始会话、播放提示音（期间忽略麦克风）→ `LISTENING`；未连接服务端时忽略唤醒 |
+| `LISTENING` 聆听 | 送 VAD（含预缓冲）；开始说话后同时上传 | 说完 → `THINKING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、`IDLE` |
+| `THINKING` 等待回复 | 丢弃 | `response.audio.start` → `SPEAKING`；只有文本时 `response.done` → `FOLLOW_UP`；`RESPONSE_TIMEOUT_S` 超时 → `turn.cancel`、`FOLLOW_UP` |
+| `SPEAKING` 播放回复 | 丢弃 | 收到 `response.done` 且播放完毕，再等 `PLAYBACK_TAIL_MS` → `FOLLOW_UP` |
+| `FOLLOW_UP` 追问 | 同 `LISTENING`，无需唤醒词 | 开口 → 新一轮 `LISTENING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、`IDLE` |
+
+任何状态下断线都立即停止播放并回到 `IDLE`；服务端 `error` 会结束当前轮并进入 `FOLLOW_UP`。状态变化、识别结果和回复文本都会打印在日志中。所有状态变化在同一个事件循环中按顺序处理；播放在独立任务中进行，不阻塞状态机。
 
 ## 音频设备检查
 

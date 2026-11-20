@@ -74,6 +74,7 @@ turn_id = uuid.UUID(bytes=turn)
 | `response.text` | `turn_id`、`text`（string） | 回复文本 |
 | `response.audio.start` | `turn_id`、`sample_rate`（必须为 16000） | 开始发送 TTS 音频，下行 `seq` 从 0 开始 |
 | `response.audio.end` | `turn_id`，可选 `frames` | 该段 TTS 音频发送完毕 |
+| `response.done` | `turn_id` | 本轮回复全部结束（文本、所有语音段）。**每一轮必须发送**，包括只有文本、没有语音的回复 |
 | `error` | `code`、`message`，可选 `session_id`、`turn_id` | 错误。与会话无关的错误可以不带 `session_id` |
 
 客户端对字段缺失、类型错误、`type` 未知或 `sample_rate` 不是 16000 的事件，丢弃并记录日志。
@@ -96,6 +97,7 @@ turn_id = uuid.UUID(bytes=turn)
   |       response.audio.start {turn_id}   |
   |        [kind=2 turn_id seq=0..]        |
   |         response.audio.end {turn_id}   |
+  |              response.done {turn_id}   |
   |<---------------------------------------|
   | input.start {新 turn_id}  ...  (连续对话) |
   | session.end                            |
@@ -104,7 +106,9 @@ turn_id = uuid.UUID(bytes=turn)
 
 - 检测到用户开始说话时，客户端先发送预缓冲中的帧（约 500ms，包含语音开头），再发送实时帧。两部分属于同一 turn，`seq` 连续。
 - 客户端半双工：播放 TTS 期间不上传麦克风音频。
-- 同一 turn 内可以有多段 `response.audio.start` … `response.audio.end`，每段的下行 `seq` 都从 0 开始。
+- 同一 turn 内可以有多段 `response.audio.start` … `response.audio.end`，每段的下行 `seq` 都从 0 开始；客户端把它们连续播放。
+- 客户端收到 `response.done` 并播放完所有语音后，进入连续对话（追问）状态。如果 `input.end` 后 20 秒内没有收到回复，或 `response.audio.end` 后 20 秒内没有收到 `response.done`，客户端分别发送 `turn.cancel` 或按回复结束处理。
+- 服务端对某一轮发送 `error` 后，客户端发送 `turn.cancel` 并进入追问状态。
 
 ## 7. 接收方规则
 

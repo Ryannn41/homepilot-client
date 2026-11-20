@@ -13,12 +13,13 @@ from pydantic import ValidationError
 from app import __version__
 from app.audio import devices
 from app.audio.capture import AudioCapture
-from app.audio.player import AudioPlayer
+from app.audio.player import AudioPlayer, make_tone
 from app.audio.vad import SpeechAudio, SpeechStart, VADDetector
 from app.audio.wakeword import WakeWordDetector
 from app.client import Disconnected, VoiceClient
-from app.protocol import AudioFrame, ServerEvent
 from app.config import SAMPLE_RATE, SAMPLE_WIDTH, Settings
+from app.conversation import Conversation
+from app.protocol import AudioFrame, ServerEvent
 
 log = logging.getLogger("homepilot")
 
@@ -76,19 +77,6 @@ async def record_test(settings: Settings, seconds: float, output: str) -> int:
           f"丢帧 {dropped}, 输入溢出 {overflows}")
     print(f"已保存: {output}")
     return 0
-
-
-def make_tone(seconds: float, freq: float = 440.0, amplitude: float = 0.1) -> np.ndarray:
-    """16kHz 正弦测试音，首尾 20ms 淡入淡出避免爆音。"""
-    n = int(seconds * SAMPLE_RATE)
-    t = np.arange(n) / SAMPLE_RATE
-    tone = amplitude * 32767 * np.sin(2 * np.pi * freq * t)
-    fade = min(n // 2, SAMPLE_RATE // 50)
-    if fade:
-        ramp = np.linspace(0.0, 1.0, fade)
-        tone[:fade] *= ramp
-        tone[n - fade :] *= ramp[::-1]
-    return np.rint(tone).astype(np.int16)
 
 
 async def play_test(settings: Settings, seconds: float) -> int:
@@ -271,7 +259,10 @@ async def _play_response(client: VoiceClient, settings: Settings) -> None:
                 elif item.type == "response.audio.end":
                     if player is not None:
                         await player.drain()
+                        player.stop()
+                        player = None
                     print(f"    播放完成: {frames} 帧 ({frames * settings.frame_ms / 1000:.2f}s)")
+                elif item.type == "response.done":
                     return
                 elif item.type == "error":
                     return
@@ -305,7 +296,13 @@ def log_startup(settings: Settings) -> None:
         settings.frame_ms,
         settings.frame_samples,
     )
-    log.info("静默超时: %.1f s", settings.silence_timeout_s)
+    log.info(
+        "对话: 静默超时 %.1f s, 响应超时 %.1f s, 播放尾音 %d ms, 唤醒提示音 %s",
+        settings.silence_timeout_s,
+        settings.response_timeout_s,
+        settings.playback_tail_ms,
+        "开" if settings.wake_sound else "关",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -366,6 +363,20 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     log_startup(settings)
+    try:
+        return _run_audio(run_assistant(settings), "运行", "2 秒内没有收到音频帧")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"启动失败: {e}", file=sys.stderr)
+        return 1
+
+
+async def run_assistant(settings: Settings) -> int:
+    with WakeWordDetector(settings) as kws, VADDetector(settings) as vad:
+        async with VoiceClient(settings) as client, AudioCapture(settings) as cap:
+            d = cap.device
+            log.info("麦克风: #%d %s | %s | %d Hz x %d ch", d.index, d.name, d.hostapi, cap.samplerate, cap.channels)
+            log.info("唤醒词: %s（Ctrl+C 退出）", "、".join(kws.keywords))
+            await Conversation(settings, cap, kws, vad, client).run()
     return 0
 
 

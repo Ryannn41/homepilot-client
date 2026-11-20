@@ -100,6 +100,7 @@ def server(type_, **fields):
     (server("response.audio.start", sample_rate=16000), "response.audio.start"),
     (server("response.audio.end", frames=10), "response.audio.end"),
     (server("response.audio.end"), "response.audio.end"),
+    (server("response.done"), "response.done"),
 ])
 def test_decode_valid(text, type_):
     ev = decode_event(text)

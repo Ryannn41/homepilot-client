@@ -100,6 +100,7 @@ SERVER_EVENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "response.text": {"text": str},
     "response.audio.start": {"sample_rate": int},
     "response.audio.end": {},
+    "response.done": {},
     "error": {"code": str, "message": str},
 }
 _TURN_OPTIONAL = {"error"}

@@ -50,7 +50,11 @@ class Settings(BaseSettings):
     vad_max_speech_s: float = Field(default=30.0, gt=0, le=120)
     preroll_ms: int = Field(default=500, ge=200, le=1000)
 
-    silence_timeout_s: float = Field(default=15.0, gt=0)
+    # 对话控制
+    silence_timeout_s: float = Field(default=15.0, gt=0)  # 聆听/追问时多久没人说话就结束会话
+    response_timeout_s: float = Field(default=20.0, gt=0)  # 说完后多久没有收到回复就取消本轮
+    playback_tail_ms: int = Field(default=300, ge=0, le=2000)  # 播放结束后等待音箱余音消散再听
+    wake_sound: bool = True  # 唤醒时播放提示音
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @field_validator("frame_ms")

@@ -25,6 +25,19 @@ def to_pcm16(data) -> np.ndarray:
     raise TypeError("音频必须是 PCM16 bytes 或一维 np.int16 数组")
 
 
+def make_tone(seconds: float, freq: float = 440.0, amplitude: float = 0.1) -> np.ndarray:
+    """16kHz 正弦测试音，首尾 20ms 淡入淡出避免爆音。"""
+    n = int(seconds * SAMPLE_RATE)
+    t = np.arange(n) / SAMPLE_RATE
+    tone = amplitude * 32767 * np.sin(2 * np.pi * freq * t)
+    fade = min(n // 2, SAMPLE_RATE // 50)
+    if fade:
+        ramp = np.linspace(0.0, 1.0, fade)
+        tone[:fade] *= ramp
+        tone[n - fade :] *= ramp[::-1]
+    return np.rint(tone).astype(np.int16)
+
+
 def candidate_output_formats(device: Device, channels: int | None = None) -> list[tuple[int, int]]:
     """通过 check_output_settings 的 (采样率, 声道数) 候选，按优先级排序。
 

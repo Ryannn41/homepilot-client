@@ -122,6 +122,7 @@ class MockServer:
             if self.realtime:
                 await asyncio.sleep(len(frame.pcm) / 2 / SAMPLE_RATE)
         await send("response.audio.end", frames=sent)
+        await send("response.done")
         log.info("已回复 turn %s：%d 帧", turn, sent)
 
 
