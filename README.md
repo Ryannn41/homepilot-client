@@ -44,6 +44,7 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 | sounddevice | 音频采集和播放（Windows wheel 自带 PortAudio） |
 | sherpa-onnx | 本地唤醒词检测（KWS）和语音活动检测（VAD） |
 | websockets | 与云端的 WebSocket 通信 |
+| psutil | 运行统计中的内存和 CPU 占用 |
 | pytest | 单元测试 |
 
 ## 配置
@@ -71,6 +72,9 @@ copy .env.example .env
 | `HOMEPILOT_PLAYBACK_TAIL_MS` | `300` | 回复播放完后再等多少毫秒才开始听 |
 | `HOMEPILOT_WAKE_SOUND` | `true` | 唤醒时播放提示音 |
 | `HOMEPILOT_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `HOMEPILOT_LOG_DIR` | `logs` | 日志文件目录，每天零点轮转；留空只输出到控制台 |
+| `HOMEPILOT_LOG_KEEP_DAYS` | `14` | 日志文件保留天数 |
+| `HOMEPILOT_STATS_INTERVAL_S` | `3600` | 运行统计写入日志的间隔（秒） |
 
 优先级：系统环境变量 > `.env` > 默认值。`.env` 从当前工作目录读取，请在仓库根目录启动。
 
@@ -98,7 +102,22 @@ python -m app.main
 | `SPEAKING` 播放回复 | 丢弃 | 收到 `response.done` 且播放完毕，再等 `PLAYBACK_TAIL_MS` → `FOLLOW_UP` |
 | `FOLLOW_UP` 追问 | 同 `LISTENING`，无需唤醒词 | 开口 → 新一轮 `LISTENING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、`IDLE` |
 
-任何状态下断线都立即停止播放并回到 `IDLE`；服务端 `error` 会结束当前轮并进入 `FOLLOW_UP`。状态变化、识别结果和回复文本都会打印在日志中。所有状态变化在同一个事件循环中按顺序处理；播放在独立任务中进行，不阻塞状态机。
+任何状态下断线都立即停止播放并回到 `IDLE`；服务端 `error` 会结束当前轮并进入 `FOLLOW_UP`。
+
+## 长期运行与故障恢复
+
+`python -m app.main` 设计为常驻运行：
+
+- **音频故障自动恢复**：采集 2 秒没有数据、PortAudio 报错、找不到设备、播放设备打不开，或麦克风连续 10 秒输出全零（真实麦克风总有底噪，全零通常意味着设备失效或被静音）时，结束当前会话、关闭音频，重新初始化 PortAudio 并重新查找设备，然后回到等待唤醒。重试间隔 1、2、5、10 秒，之后每 10 秒一次；音频正常运行 60 秒后间隔重新从 1 秒开始。拔出耳机再插回，或者开机时设备还没就绪，都会自动恢复。唤醒词和 VAD 模型、WebSocket 连接不受影响。
+- **其他异常**：状态机中未预料的异常会连同调用栈写入日志，然后按同样的方式恢复，不会退出程序。只有启动时模型文件缺失、配置错误才会退出。
+- **日志文件**：同时写入 `logs/homepilot.log`（UTF-8），每天零点轮转，保留 `HOMEPILOT_LOG_KEEP_DAYS` 天。
+- **运行统计**：每隔 `HOMEPILOT_STATS_INTERVAL_S` 秒及退出时写一行，例如：
+
+```
+运行统计: 运行 24.00 h, 唤醒 37 次, 对话 52 轮, 疑似误唤醒 2 次, 断线 0 次, 音频重启 1 次, 丢帧 0, 内存 152.3 MB, CPU 1.2%
+```
+
+「疑似误唤醒」指唤醒后一句话没说就因静默超时结束的会话；数量偏多时调高 `HOMEPILOT_KWS_KEYWORDS_THRESHOLD`。CPU 为占全部核心的百分比。状态变化、识别结果和回复文本都会打印在日志中。所有状态变化在同一个事件循环中按顺序处理；播放在独立任务中进行，不阻塞状态机。
 
 ## 音频设备检查
 

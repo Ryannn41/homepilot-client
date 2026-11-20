@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     playback_tail_ms: int = Field(default=300, ge=0, le=2000)  # 播放结束后等待音箱余音消散再听
     wake_sound: bool = True  # 唤醒时播放提示音
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_dir: str = "logs"  # 日志文件目录，每天零点轮转；留空表示只输出到控制台
+    log_keep_days: int = Field(default=14, ge=1)
+    stats_interval_s: float = Field(default=3600.0, ge=10)  # 运行统计写入日志的间隔
 
     @field_validator("frame_ms")
     @classmethod

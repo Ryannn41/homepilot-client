@@ -73,6 +73,12 @@ def list_devices(preferred_hostapi: str = "wasapi") -> list[Device]:
     return devices
 
 
+def refresh_portaudio() -> None:
+    """重新初始化 PortAudio，使设备插拔、默认设备变化可见。调用前必须关闭所有音频流。"""
+    sd._terminate()
+    sd._initialize()
+
+
 def find_input_device(spec: str = "", preferred_hostapi: str = "wasapi") -> Device:
     """按配置解析输入设备：空为首选 Host API 的默认输入，纯数字为索引，否则为名称子串。"""
     return _find_device(spec, preferred_hostapi, "input")

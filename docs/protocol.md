@@ -64,7 +64,7 @@ turn_id = uuid.UUID(bytes=turn)
 | `input.start` | `turn_id`、`sample_rate`=16000、`channels`=1、`format`=`"pcm16"` | 开始一轮语音输入，随后发送该 turn 的麦克风音频帧 |
 | `input.end` | `turn_id`、`frames`、`truncated` | 本轮输入结束。`frames` 为已发送的音频帧数，服务端可据此判断是否丢帧；`truncated` 为 true 表示达到最长时长被截断 |
 | `turn.cancel` | `turn_id`、`reason` | 放弃本轮（如响应超时），服务端应停止生成并不再发送该 turn 的数据 |
-| `session.end` | `reason` | 结束会话（如静默超时） |
+| `session.end` | `reason` | 结束会话。`reason`：`silence_timeout` 静默超时，`shutdown` 客户端退出，`error` 客户端音频故障等异常 |
 
 ### 5.2 服务端 → 客户端
 

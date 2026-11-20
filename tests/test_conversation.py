@@ -518,17 +518,69 @@ def test_reconnected_event_is_harmless():
     run(main())
 
 
-def test_player_failure_does_not_block_conversation():
+def test_player_failure_raises_audio_error():
+    async def main():
+        h = Harness()
+        task = asyncio.create_task(h.conv.run())
+        await h.wake()
+        await h.speak()
+        FakePlayer.fail_start = True
+        h.client.server("response.audio.start", sample_rate=16000)
+        with pytest.raises(conv_module.AudioDeviceError, match="设备打不开"):
+            await asyncio.wait_for(task, 2)
+        assert h.client.calls[-1] == ("session.end", "error")
+    run(main())
+
+
+def test_beep_failure_raises_audio_error():
     async def main():
         FakePlayer.fail_start = True
-        async with Harness() as h:
+        h = Harness()
+        task = asyncio.create_task(h.conv.run())
+        h.cap.push(WAKE)
+        with pytest.raises(conv_module.AudioDeviceError):
+            await asyncio.wait_for(task, 2)
+    run(main())
+
+
+def test_digital_silence_raises_audio_error(monkeypatch):
+    monkeypatch.setattr(conv_module, "DIGITAL_SILENCE_S", 0.2)  # 10 帧
+
+    async def main():
+        h = Harness()
+        task = asyncio.create_task(h.conv.run())
+        zero = bytes(640)
+        h.cap.push(*[zero] * 9, QUIET, *[zero] * 9)  # 中间有底噪则重新计数
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        h.cap.push(zero)
+        with pytest.raises(conv_module.AudioDeviceError, match="全零"):
+            await asyncio.wait_for(task, 2)
+    run(main())
+
+
+def test_stats_counts_wakes_turns_false_wakes_and_disconnects():
+    async def main():
+        async with Harness(silence_timeout_s=0.2) as h:
             await h.wake()
             await h.speak()
-            h.client.server("response.audio.start", sample_rate=16000)
-            h.client.tts(b"\x00\x00" * 320)
             h.client.server("response.done")
             await h.state(State.FOLLOW_UP)
+            await h.state(State.IDLE, timeout=1)
+            await h.wake()  # 唤醒后不说话
+            await h.state(State.IDLE, timeout=1)
+            h.client.disconnect()
+            await h.until(lambda: h.conv.stats.disconnects == 1)
+            s = h.conv.stats
+            assert (s.wakes, s.turns, s.false_wakes) == (2, 1, 1)
     run(main())
+
+
+def test_shared_stats_object():
+    stats = conv_module.Stats(wakes=5)
+    h = Harness()
+    conv = Conversation(h.settings, h.cap, h.kws, h.vad, h.client, player_factory=FakePlayer, stats=stats)
+    assert conv.stats is stats
 
 
 # ---- 运行与退出 ----
