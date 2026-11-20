@@ -64,11 +64,11 @@ def test_invalid_values(monkeypatch, key, value):
 
 def test_main_starts(caplog):
     caplog.set_level("INFO")
-    assert main() == 0
+    assert main([]) == 0
     assert "HomePilot Client" in caplog.text
 
 
 def test_main_rejects_bad_config(monkeypatch, capsys):
     monkeypatch.setenv("HOMEPILOT_FRAME_MS", "30")
-    assert main() == 2
+    assert main([]) == 2
     assert "配置错误" in capsys.readouterr().err

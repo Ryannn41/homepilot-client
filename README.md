@@ -76,6 +76,23 @@ python -m app.main
 
 启动后会打印版本和当前生效的配置；配置不合法时打印错误并以退出码 2 结束。
 
+## 音频设备检查
+
+```powershell
+python -m app.main --list-devices   # 按 Host API 分组列出设备（首选 HOMEPILOT_AUDIO_HOSTAPI 排最前）
+python -m app.main --probe          # 探测每个设备在 16000/44100/48000 Hz、单/双声道下是否可用
+```
+
+`--list-devices` 每行依次为：设备索引、输入/输出通道数、默认采样率、该 Host API 下的默认设备标记、设备名。
+
+`--probe` 使用 `sounddevice.check_input_settings` / `check_output_settings`（PCM16）逐项检查，结果分三类：
+
+- **支持**：PortAudio 接受该格式。
+- **不支持**：PortAudio 明确拒绝（采样率、通道数或采样格式无效）。
+- **探测失败**：其他主机错误或驱动异常，括号中给出原因。
+
+注意：这一步只检查格式是否被接受，不实际打开音频流；最终能否正常采集和播放，在后续录音、播放测试中验证。WASAPI 共享模式通常只接受系统混音采样率（常见为 48000 Hz），因此客户端会在本地重采样到 16kHz。
+
 ## 测试
 
 ```powershell
