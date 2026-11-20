@@ -27,6 +27,8 @@ def test_defaults():
     assert s.frame_ms == 20
     assert s.frame_samples == 320
     assert s.silence_timeout_s == 15.0
+    assert s.wake_sound is True
+    assert s.silence_farewell_sound is True
     assert s.log_level == "INFO"
 
 

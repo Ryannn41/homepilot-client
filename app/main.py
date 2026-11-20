@@ -299,11 +299,12 @@ def log_startup(settings: Settings) -> None:
         settings.frame_samples,
     )
     log.info(
-        "对话: 静默超时 %.1f s, 响应超时 %.1f s, 播放尾音 %d ms, 唤醒提示音 %s",
+        "对话: 静默超时 %.1f s, 响应超时 %.1f s, 播放尾音 %d ms, 唤醒应答「我在」 %s, 静默告别 %s",
         settings.silence_timeout_s,
         settings.response_timeout_s,
         settings.playback_tail_ms,
         "开" if settings.wake_sound else "关",
+        "开" if settings.silence_farewell_sound else "关",
     )
 
 

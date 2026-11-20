@@ -70,7 +70,8 @@ copy .env.example .env
 | `HOMEPILOT_SILENCE_TIMEOUT_S` | `15` | 唤醒后或追问时多少秒没人说话就结束会话 |
 | `HOMEPILOT_RESPONSE_TIMEOUT_S` | `20` | 说完后多少秒内没有收到回复就取消本轮 |
 | `HOMEPILOT_PLAYBACK_TAIL_MS` | `300` | 回复播放完后再等多少毫秒才开始听 |
-| `HOMEPILOT_WAKE_SOUND` | `true` | 唤醒时播放提示音 |
+| `HOMEPILOT_WAKE_SOUND` | `true` | 唤醒时播放「我在」应答 |
+| `HOMEPILOT_SILENCE_FAREWELL_SOUND` | `true` | 静默超时结束时播放「有需要再叫我」 |
 | `HOMEPILOT_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `HOMEPILOT_LOG_DIR` | `logs` | 日志文件目录，每天零点轮转；留空只输出到控制台 |
 | `HOMEPILOT_LOG_KEEP_DAYS` | `14` | 日志文件保留天数 |
@@ -90,17 +91,28 @@ python -m app.main
 
 服务端尚未上线时，先在另一个窗口运行 `python -m tools.mock_server`（见「WebSocket 通信 / 联调」）。
 
+根目录的两个脚本只覆盖服务端地址，其余配置仍取自 `.env`，额外参数原样传给 `app.main`：
+
+```powershell
+.\start-local.cmd                # 推荐：不受执行策略限制（含 \\wsl.localhost\... 路径）
+.\start-cloud.cmd
+.\start-cloud.cmd --ws-test 3    # 带参数
+# 若已设置执行策略，也可直接 .\start-local.ps1 / .\start-cloud.ps1
+```
+
+需要先 `conda activate homepilot_client`。`.cmd` 会调用 `powershell -ExecutionPolicy Bypass`，无需改系统策略；仍要用 `.ps1` 时，可执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。云端开启令牌校验时，在 `.env` 中配置与服务端一致的 `HOMEPILOT_AUTH_TOKEN`。
+
 ## 对话流程
 
 `app/conversation.py` 中的 `Conversation` 按状态决定每一帧麦克风音频的去向（半双工）：
 
 | 状态 | 麦克风 | 离开条件 |
 | --- | --- | --- |
-| `IDLE` 等待唤醒 | 只送唤醒词检测 | 唤醒：开始会话、播放提示音（期间忽略麦克风）→ `LISTENING`；未连接服务端时忽略唤醒 |
-| `LISTENING` 聆听 | 送 VAD（含预缓冲）；开始说话后同时上传 | 说完 → `THINKING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、`IDLE` |
+| `IDLE` 等待唤醒 | 只送唤醒词检测 | 唤醒：开始会话、播放「我在」（期间忽略麦克风）→ `LISTENING`；未连接服务端时忽略唤醒 |
+| `LISTENING` 聆听 | 送 VAD（含预缓冲）；开始说话后同时上传 | 说完 → `THINKING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、播放「有需要再叫我」、`IDLE` |
 | `THINKING` 等待回复 | 丢弃 | `response.audio.start` → `SPEAKING`；只有文本时 `response.done` → `FOLLOW_UP`；`RESPONSE_TIMEOUT_S` 超时 → `turn.cancel`、`FOLLOW_UP` |
 | `SPEAKING` 播放回复 | 丢弃 | 收到 `response.done` 且播放完毕，再等 `PLAYBACK_TAIL_MS` → `FOLLOW_UP` |
-| `FOLLOW_UP` 追问 | 同 `LISTENING`，无需唤醒词 | 开口 → 新一轮 `LISTENING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、`IDLE` |
+| `FOLLOW_UP` 追问 | 同 `LISTENING`，无需唤醒词 | 开口 → 新一轮 `LISTENING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、播放「有需要再叫我」、`IDLE` |
 
 任何状态下断线都立即停止播放并回到 `IDLE`；服务端 `error` 会结束当前轮并进入 `FOLLOW_UP`。
 
@@ -112,7 +124,7 @@ python -m app.main
 | --- | --- |
 | `IDLE` | 先发 `session.start` 开启会话，再播放 |
 | `LISTENING` / `FOLLOW_UP`，用户还没开口 | 直接在当前会话中播放 |
-| 用户正在说话、`THINKING`、`SPEAKING`，或正在播唤醒提示音 | 排队，等这一轮回复播完进入 `FOLLOW_UP` 后再播 |
+| 用户正在说话、`THINKING`、`SPEAKING`，或正在播唤醒应答 | 排队，等这一轮回复播完进入 `FOLLOW_UP` 后再播 |
 
 播放时先放提示音，再放提醒语音；播完进入 `FOLLOW_UP`，用户不说唤醒词就能直接回应（如「好的知道了」）。没人回应、静默超时回到 `IDLE` 时，不计为疑似误唤醒。多条提醒按到达顺序逐条播放。
 

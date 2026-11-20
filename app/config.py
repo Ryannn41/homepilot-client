@@ -54,7 +54,8 @@ class Settings(BaseSettings):
     silence_timeout_s: float = Field(default=15.0, gt=0)  # 聆听/追问时多久没人说话就结束会话
     response_timeout_s: float = Field(default=20.0, gt=0)  # 说完后多久没有收到回复就取消本轮
     playback_tail_ms: int = Field(default=300, ge=0, le=2000)  # 播放结束后等待音箱余音消散再听
-    wake_sound: bool = True  # 唤醒时播放提示音
+    wake_sound: bool = True  # 唤醒时播放「我在」应答
+    silence_farewell_sound: bool = True  # 静默超时结束时播放「有需要再叫我」
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_dir: str = "logs"  # 日志文件目录，每天零点轮转；留空表示只输出到控制台
     log_keep_days: int = Field(default=14, ge=1)

@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 
+from app.audio.assets import load_silence_farewell, load_wake_response
 from app.audio.player import AudioPlayer, make_tone
 from app.audio.vad import SpeechAudio, SpeechStart
 from app.client import Connected, Disconnected
@@ -117,11 +118,14 @@ class Conversation:
         self._events: asyncio.Queue = asyncio.Queue()
         self._speaker = Speaker(settings, player_factory, lambda *done: self._events.put_nowait(("played", done)))
         self.stats = stats or Stats()
-        self._beep = make_tone(0.2, freq=880.0, amplitude=0.25).tobytes()
+        self._notice_chime = make_tone(0.2, freq=880.0, amplitude=0.25).tobytes()
+        self._wake_response = load_wake_response()
+        self._silence_farewell = load_silence_farewell()
         self.state = State.IDLE
         self._deadline: float | None = None
         self._uploading = False
-        self._beep_token: object | None = None  # 提示音播放中，忽略麦克风
+        self._wake_play_token: object | None = None  # 唤醒应答播放中，忽略麦克风
+        self._farewell_play_token: object | None = None  # 静默告别播放中，忽略麦克风
         self._reply_token: object | None = None
         self._tail = False  # 播放已结束，正在等待余音消散
         self._session_turns = 0
@@ -189,10 +193,12 @@ class Conversation:
         else:
             self._zero_frames = 0
         if self.state is State.IDLE:
+            if self._farewell_play_token is not None:
+                return
             event = await self._kws.process(frame)
             if event:
                 await self._on_wake(event)
-        elif self.state in (State.LISTENING, State.FOLLOW_UP) and self._beep_token is None:
+        elif self.state in (State.LISTENING, State.FOLLOW_UP) and self._wake_play_token is None:
             for event in self._vad.process(frame):
                 await self._on_vad(event)
 
@@ -210,8 +216,8 @@ class Conversation:
         self._notice_session = False
         self._listen(State.LISTENING, f"唤醒，session={self._client.session_id}")
         if self._settings.wake_sound:
-            self._beep_token = self._speaker.start()
-            self._speaker.feed(self._beep)
+            self._wake_play_token = self._speaker.start()
+            self._speaker.feed(self._wake_response)
             self._speaker.finish()
 
     async def _on_vad(self, event) -> None:
@@ -294,7 +300,7 @@ class Conversation:
 
         提醒按回复的方式播放（提示音 + 语音），播完进入 FOLLOW_UP，用户可以直接回应。
         """
-        if not self._notices or self._uploading or self._beep_token is not None:
+        if not self._notices or self._uploading or self._wake_play_token is not None or self._farewell_play_token is not None:
             return
         if self.state not in (State.IDLE, State.LISTENING, State.FOLLOW_UP):
             return
@@ -306,7 +312,7 @@ class Conversation:
             self._notice_session = True
             self._kws.reset()
         self._reply_token = self._speaker.start()
-        self._speaker.feed(self._beep)
+        self._speaker.feed(self._notice_chime)
         self._speaker.feed(pcm)
         self._speaker.finish()
         self._deadline = None
@@ -316,10 +322,12 @@ class Conversation:
     # ---- 播放与超时 ----
 
     def _on_played(self, token: object, error: Exception | None) -> None:
-        if error is not None and token in (self._beep_token, self._reply_token):
+        if error is not None and token in (self._wake_play_token, self._reply_token, self._farewell_play_token):
             raise AudioDeviceError(f"播放失败: {error}")
-        if token is self._beep_token:
-            self._beep_token = None
+        if token is self._wake_play_token:
+            self._wake_play_token = None
+        elif token is self._farewell_play_token:
+            self._farewell_play_token = None
         elif token is self._reply_token and self.state is State.SPEAKING:
             self._reply_token = None
             self._tail = True
@@ -331,7 +339,11 @@ class Conversation:
             if self._session_turns == 0 and not self._notice_session:
                 self.stats.false_wakes += 1
                 log.info("唤醒后没有说话（疑似误唤醒）")
-            await self._go_idle(f"{self._settings.silence_timeout_s:g} 秒没有说话", end_reason="silence_timeout")
+            await self._go_idle(
+                f"{self._settings.silence_timeout_s:g} 秒没有说话",
+                end_reason="silence_timeout",
+                farewell=self._settings.silence_farewell_sound,
+            )
         elif state is State.THINKING:
             await self._client.cancel_turn("timeout")
             self._listen(State.FOLLOW_UP, f"{self._settings.response_timeout_s:g} 秒内没有回复")
@@ -362,9 +374,9 @@ class Conversation:
         if state is State.FOLLOW_UP:
             log.info("可以直接继续说话；%g 秒内没开口将回到等待唤醒", self._settings.silence_timeout_s)
 
-    async def _go_idle(self, reason: str, end_reason: str | None) -> None:
+    async def _go_idle(self, reason: str, end_reason: str | None, *, farewell: bool = False) -> None:
         self._speaker.cancel()
-        self._beep_token = self._reply_token = None
+        self._wake_play_token = self._reply_token = self._farewell_play_token = None
         self._uploading = self._tail = False
         self._deadline = None
         if end_reason is not None:
@@ -372,4 +384,8 @@ class Conversation:
         self._kws.reset()
         self._vad.reset()
         self._enter(State.IDLE, reason)
+        if farewell:
+            self._farewell_play_token = self._speaker.start()
+            self._speaker.feed(self._silence_farewell)
+            self._speaker.finish()
         log.info("等待唤醒词")

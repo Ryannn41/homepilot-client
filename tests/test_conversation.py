@@ -212,7 +212,11 @@ class Harness:
         self.cap.push(QUIET, WAKE)
         await self.state(State.LISTENING)
         if self.settings.wake_sound:
-            await self.until(lambda: self.conv._beep_token is None)
+            await self.until(lambda: self.conv._wake_play_token is None)
+
+    async def wait_farewell(self):
+        if self.settings.silence_farewell_sound:
+            await self.until(lambda: self.conv._farewell_play_token is None)
 
     async def speak(self, voice=5):
         self.cap.push(*([VOICE] * voice + [QUIET] * 3))
@@ -243,16 +247,16 @@ def test_idle_routes_frames_to_kws_only():
     run(main())
 
 
-def test_wake_starts_session_and_plays_beep():
+def test_wake_starts_session_and_plays_wozai():
     async def main():
         async with Harness() as h:
             await h.wake()
             assert h.client.calls == ["session.start"]
             assert h.kws.resets == 1 and h.vad.resets >= 1
-            beep = FakePlayer.instances[0]
-            assert beep.started and beep.drained and beep.stopped
-            assert len(b"".join(sound(beep))) == 2 * int(0.2 * 16000)
-            assert beep.written[0] == beep.written[-1] == conv_module.PAD_SILENCE  # 前后垫静音
+            player = FakePlayer.instances[0]
+            assert player.started and player.drained and player.stopped
+            assert len(b"".join(sound(player))) == len(h.conv._wake_response)
+            assert player.written[0] == player.written[-1] == conv_module.PAD_SILENCE  # 前后垫静音
     run(main())
 
 
@@ -265,7 +269,7 @@ def test_mic_ignored_while_beep_plays():
             h.cap.push(*[VOICE] * 5)
             await h.settle()
             assert h.vad.frames == [] and h.client.audio == []
-            await h.until(lambda: h.conv._beep_token is None)
+            await h.until(lambda: h.conv._wake_play_token is None)
             h.cap.push(*[VOICE] * 3)
             await h.until(lambda: len(h.vad.frames) == 3)
     run(main())
@@ -410,7 +414,7 @@ def test_notice_in_idle_starts_session_and_follows_up():
             assert h.client.calls == ["session.start"]
             await h.state(State.FOLLOW_UP)
             played = sound(h.reply_player())
-            assert played == [h.conv._beep, b"\x01\x00" * 320 + b"\x02\x00" * 320]  # 提示音 + 拼接后的提醒语音
+            assert played == [h.conv._notice_chime, b"\x01\x00" * 320 + b"\x02\x00" * 320]  # 提示音 + 拼接后的提醒语音
             await h.speak()  # 不用唤醒词直接回应
             assert h.client.calls == ["session.start", "input.start", "input.end"]
     run(main())
@@ -422,6 +426,7 @@ def test_notice_without_reply_is_not_false_wake():
             h.client.notify("提醒你：吃药", b"\x01\x00" * 320)
             await h.state(State.FOLLOW_UP)
             await h.state(State.IDLE, timeout=1)
+            await h.wait_farewell()
             assert h.client.calls[-1] == ("session.end", "silence_timeout")
             assert h.conv.stats.false_wakes == 0
     run(main())
@@ -470,8 +475,11 @@ def test_silence_timeout_in_listening_returns_to_idle():
             await h.wake()
             resets = h.kws.resets
             await h.state(State.IDLE, timeout=1)
+            await h.wait_farewell()
             assert h.client.calls[-1] == ("session.end", "silence_timeout")
             assert h.kws.resets == resets + 1
+            farewell = FakePlayer.instances[-1]
+            assert sound(farewell) == [h.conv._silence_farewell]
     run(main())
 
 
@@ -494,7 +502,18 @@ def test_silence_timeout_in_follow_up_returns_to_idle():
             h.client.server("response.done")
             await h.state(State.FOLLOW_UP)
             await h.state(State.IDLE, timeout=1)
+            await h.wait_farewell()
             assert h.client.calls[-1] == ("session.end", "silence_timeout")
+    run(main())
+
+
+def test_silence_farewell_sound_disabled():
+    async def main():
+        async with Harness(silence_timeout_s=0.2, silence_farewell_sound=False) as h:
+            await h.wake()
+            n_players = len(FakePlayer.instances)
+            await h.state(State.IDLE, timeout=1)
+            assert len(FakePlayer.instances) == n_players
     run(main())
 
 
@@ -636,8 +655,10 @@ def test_stats_counts_wakes_turns_false_wakes_and_disconnects():
             h.client.server("response.done")
             await h.state(State.FOLLOW_UP)
             await h.state(State.IDLE, timeout=1)
+            await h.wait_farewell()
             await h.wake()  # 唤醒后不说话
             await h.state(State.IDLE, timeout=1)
+            await h.wait_farewell()
             h.client.disconnect()
             await h.until(lambda: h.conv.stats.disconnects == 1)
             s = h.conv.stats
