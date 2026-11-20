@@ -12,6 +12,7 @@ from app import __version__
 from app.audio import devices
 from app.audio.capture import AudioCapture
 from app.audio.player import AudioPlayer
+from app.audio.wakeword import WakeWordDetector
 from app.config import SAMPLE_RATE, SAMPLE_WIDTH, Settings
 
 log = logging.getLogger("homepilot")
@@ -24,6 +25,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     group.add_argument("--probe", action="store_true", help="探测设备支持的采样率和声道")
     group.add_argument("--record-test", type=float, metavar="SECONDS", help="录音测试：打印电平并保存 WAV")
     group.add_argument("--play-test", type=float, metavar="SECONDS", help="播放 440 Hz 测试音")
+    group.add_argument(
+        "--kws-test", type=float, nargs="?", const=0.0, metavar="SECONDS",
+        help="从麦克风检测唤醒词；可选时长，省略则一直运行到 Ctrl+C",
+    )
     parser.add_argument("--output", default="record_test.wav", help="--record-test 的 WAV 输出路径")
     return parser.parse_args(argv)
 
@@ -90,6 +95,34 @@ async def play_test(settings: Settings, seconds: float) -> int:
     return 0 if completed else 1
 
 
+async def kws_test(settings: Settings, seconds: float) -> int:
+    level_every = 3000 // settings.frame_ms
+    max_frames = int(seconds * 1000 / settings.frame_ms) if seconds > 0 else None
+    detections = 0
+    with WakeWordDetector(settings) as detector:
+        async with AudioCapture(settings) as cap:
+            d = cap.device
+            print(f"设备: #{d.index} {d.name} | {d.hostapi} | {cap.samplerate} Hz x {cap.channels} ch")
+            print(f"关键词: {', '.join(detector.keywords)}；请说出唤醒词（Ctrl+C 退出）")
+            recent: list[bytes] = []
+            frames = 0
+            while max_frames is None or frames < max_frames:
+                frame = await asyncio.wait_for(cap.read(), timeout=2.0)
+                frames += 1
+                event = await detector.process(frame)
+                if event:
+                    detections += 1
+                    print(f">>> 唤醒: {event.keyword}  帧 #{event.frame_index}  "
+                          f"t={event.frame_index * settings.frame_ms / 1000:.2f}s")
+                    detector.reset()
+                recent.append(frame)
+                if len(recent) == level_every:
+                    print(f"    {_level(np.frombuffer(b''.join(recent), dtype=np.int16))}")
+                    recent.clear()
+    print(f"结束: 共 {frames} 帧, 唤醒 {detections} 次, 丢帧 {cap.dropped_frames}")
+    return 0
+
+
 def log_startup(settings: Settings) -> None:
     log.info("HomePilot Client %s 启动", __version__)
     log.info("服务端地址: %s", settings.server_url)
@@ -139,6 +172,15 @@ def main(argv: list[str] | None = None) -> int:
             print("--play-test 必须大于 0", file=sys.stderr)
             return 2
         return _run_audio(play_test(settings, args.play_test), "播放", "播放未在预期时间内结束")
+    if args.kws_test is not None:
+        if args.kws_test < 0:
+            print("--kws-test 时长不能为负数", file=sys.stderr)
+            return 2
+        try:
+            return _run_audio(kws_test(settings, args.kws_test), "唤醒检测", "2 秒内没有收到音频帧")
+        except (FileNotFoundError, ValueError) as e:
+            print(f"唤醒检测失败: {e}", file=sys.stderr)
+            return 1
 
     log_startup(settings)
     return 0

@@ -122,6 +122,61 @@ async with AudioPlayer(settings) as player:
 
 `stop()` 立即中止并释放输出流，可重复调用；异常、任务取消时同样会释放。
 
+## 唤醒词（KWS）
+
+唤醒词为「你好，小余」，使用 [sherpa-onnx 开放词表 KWS](https://k2-fsa.github.io/sherpa/onnx/kws/index.html)，无需训练。
+
+### 下载模型
+
+模型不入库，解压到 `models/`（已被 `.gitignore` 忽略）。默认使用中文模型 wenetspeech-3.3M：
+
+```powershell
+cd models
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2
+tar xf sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2
+```
+
+备选中英文模型 zh-en-3M（chunk-8 延迟约 160ms，默认模型约 320ms），下载后在 `.env` 中切换：
+
+```powershell
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+tar xf sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+```
+
+```ini
+HOMEPILOT_KWS_MODEL_DIR=models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20
+HOMEPILOT_KWS_ENCODER=encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx
+HOMEPILOT_KWS_DECODER=decoder-epoch-13-avg-2-chunk-8-left-64.onnx
+HOMEPILOT_KWS_JOINER=joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx
+```
+
+两个模型的「你好小余」token 序列相同，共用仓库根目录的 `keywords.txt`。
+
+### 关键词文件
+
+`keywords.txt` 每行一个关键词：声母/韵母拼音 token，`@` 后为原文（不能含空格），可追加 `:加分` 和 `#阈值` 单独调节：
+
+```
+n ǐ h ǎo x iǎo y ú @你好小余
+```
+
+修改唤醒词时用 sherpa-onnx 自带工具生成（需额外 `pip install pypinyin sentencepiece`，仅生成时需要）：
+
+```powershell
+python -c "import sherpa_onnx; print(sherpa_onnx.text2token(['你好小余'], tokens='models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01/tokens.txt', tokens_type='ppinyin'))"
+```
+
+启动时会校验关键词中的 token 都在模型 `tokens.txt` 中。
+
+### 测试
+
+```powershell
+python -m app.main --kws-test        # 持续检测，Ctrl+C 退出
+python -m app.main --kws-test 30     # 检测 30 秒
+```
+
+检测到唤醒词时打印 `>>> 唤醒: 你好小余  帧 #N  t=...s`，每 3 秒打印一次麦克风电平。误唤醒多时调高 `HOMEPILOT_KWS_KEYWORDS_THRESHOLD`，漏检多时调低。
+
 ## 重采样
 
 `app/audio/resample.py` 中的 `StreamResampler` 把连续的单声道 PCM16（一维 `np.int16`）从设备采样率流式转换为 16kHz：

@@ -27,6 +27,17 @@ class Settings(BaseSettings):
     audio_hostapi: str = "wasapi"
     frame_ms: int = 20
 
+    # 唤醒词（sherpa-onnx KWS）：模型文件名相对于 kws_model_dir
+    kws_model_dir: str = "models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+    kws_encoder: str = "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+    kws_decoder: str = "decoder-epoch-12-avg-2-chunk-16-left-64.onnx"
+    kws_joiner: str = "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
+    kws_tokens: str = "tokens.txt"
+    kws_keywords_file: str = "keywords.txt"
+    kws_keywords_score: float = Field(default=1.0, gt=0)
+    kws_keywords_threshold: float = Field(default=0.25, gt=0, lt=1)
+    kws_num_threads: int = Field(default=1, ge=1)
+
     silence_timeout_s: float = Field(default=15.0, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
