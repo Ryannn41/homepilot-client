@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+
+.env
+
+# 模型文件体积大，不入库，下载方式见 README
+models/*
+!models/.gitkeep
+
+# 录音测试产物
+*.wav
+
+.vscode/
+.idea/
