@@ -93,6 +93,17 @@ python -m app.main --probe          # 探测每个设备在 16000/44100/48000 Hz
 
 注意：这一步只检查格式是否被接受，不实际打开音频流；最终能否正常采集和播放，在后续录音、播放测试中验证。WASAPI 共享模式通常只接受系统混音采样率（常见为 48000 Hz），因此客户端会在本地重采样到 16kHz。
 
+## 录音测试
+
+```powershell
+python -m app.main --record-test 5                       # 录 5 秒，保存为 record_test.wav
+python -m app.main --record-test 5 --output D:\tmp\a.wav
+```
+
+使用 `HOMEPILOT_INPUT_DEVICE` 指定的设备（留空为 `HOMEPILOT_AUDIO_HOSTAPI` 下的默认输入），按设备实际接受的原生采样率采集，转换为 16kHz 单声道 PCM16，每秒打印一次 RMS（dBFS）和峰值。结束时打印帧数、丢帧和输入溢出次数。WAV 文件已被 `.gitignore` 忽略。
+
+`AudioCapture` 的队列默认容纳 50 帧（1 秒），满时丢弃最旧的帧并计数。
+
 ## 重采样
 
 `app/audio/resample.py` 中的 `StreamResampler` 把连续的单声道 PCM16（一维 `np.int16`）从设备采样率流式转换为 16kHz：

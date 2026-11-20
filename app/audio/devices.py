@@ -73,6 +73,25 @@ def list_devices(preferred_hostapi: str = "wasapi") -> list[Device]:
     return devices
 
 
+def find_input_device(spec: str = "", preferred_hostapi: str = "wasapi") -> Device:
+    """按配置解析输入设备：空为首选 Host API 的默认输入，纯数字为索引，否则为名称子串。"""
+    candidates = [d for d in list_devices(preferred_hostapi) if d.max_input_channels > 0]
+    if not candidates:
+        raise LookupError("没有可用的输入设备")
+    spec = spec.strip()
+    if not spec:
+        return next((d for d in candidates if d.is_default_input), candidates[0])
+    if spec.isdigit():
+        for d in candidates:
+            if d.index == int(spec):
+                return d
+        raise LookupError(f"输入设备 #{spec} 不存在或没有输入通道")
+    for d in candidates:
+        if spec.lower() in d.name.lower():
+            return d
+    raise LookupError(f"找不到名称包含 {spec!r} 的输入设备")
+
+
 def probe(device: Device, kind: Kind) -> list[ProbeResult]:
     check = sd.check_input_settings if kind == "input" else sd.check_output_settings
     results = []
