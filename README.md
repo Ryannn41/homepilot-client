@@ -104,6 +104,24 @@ python -m app.main --record-test 5 --output D:\tmp\a.wav
 
 `AudioCapture` 的队列默认容纳 50 帧（1 秒），满时丢弃最旧的帧并计数。
 
+## 播放测试
+
+```powershell
+python -m app.main --play-test 5                          # 播放 5 秒 440 Hz 测试音（约 -20 dBFS）
+$env:HOMEPILOT_OUTPUT_DEVICE="HyperX"; python -m app.main --play-test 5
+```
+
+`AudioPlayer` 接收 16kHz 单声道 PCM16（`bytes` 或一维 `np.int16`），按设备实际能打开的格式播放：采样率依次尝试设备默认值、48000、44100、16000，声道优先双声道（单声道复制到左右），每个候选先经 `check_output_settings` 过滤，再实际打开并启动输出流验证，失败则换下一个。
+
+```python
+async with AudioPlayer(settings) as player:
+    await player.write(chunk)     # 可多次写入，缓冲超过 500ms 时异步等待
+    done = await player.drain()   # 输出尾部并等待播完；被 stop() 打断返回 False
+# 或一次性：await AudioPlayer(settings).play(pcm)
+```
+
+`stop()` 立即中止并释放输出流，可重复调用；异常、任务取消时同样会释放。
+
 ## 重采样
 
 `app/audio/resample.py` 中的 `StreamResampler` 把连续的单声道 PCM16（一维 `np.int16`）从设备采样率流式转换为 16kHz：

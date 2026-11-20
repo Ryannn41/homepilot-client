@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app import __version__
 from app.audio import devices
 from app.audio.capture import AudioCapture
+from app.audio.player import AudioPlayer
 from app.config import SAMPLE_RATE, SAMPLE_WIDTH, Settings
 
 log = logging.getLogger("homepilot")
@@ -22,6 +23,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     group.add_argument("--list-devices", action="store_true", help="列出所有音频设备")
     group.add_argument("--probe", action="store_true", help="探测设备支持的采样率和声道")
     group.add_argument("--record-test", type=float, metavar="SECONDS", help="录音测试：打印电平并保存 WAV")
+    group.add_argument("--play-test", type=float, metavar="SECONDS", help="播放 440 Hz 测试音")
     parser.add_argument("--output", default="record_test.wav", help="--record-test 的 WAV 输出路径")
     return parser.parse_args(argv)
 
@@ -59,6 +61,33 @@ async def record_test(settings: Settings, seconds: float, output: str) -> int:
           f"丢帧 {dropped}, 输入溢出 {overflows}")
     print(f"已保存: {output}")
     return 0
+
+
+def make_tone(seconds: float, freq: float = 440.0, amplitude: float = 0.1) -> np.ndarray:
+    """16kHz 正弦测试音，首尾 20ms 淡入淡出避免爆音。"""
+    n = int(seconds * SAMPLE_RATE)
+    t = np.arange(n) / SAMPLE_RATE
+    tone = amplitude * 32767 * np.sin(2 * np.pi * freq * t)
+    fade = min(n // 2, SAMPLE_RATE // 50)
+    if fade:
+        ramp = np.linspace(0.0, 1.0, fade)
+        tone[:fade] *= ramp
+        tone[n - fade :] *= ramp[::-1]
+    return np.rint(tone).astype(np.int16)
+
+
+async def play_test(settings: Settings, seconds: float) -> int:
+    tone = make_tone(seconds)
+    loop = asyncio.get_running_loop()
+    async with AudioPlayer(settings) as player:
+        d = player.device
+        print(f"设备: #{d.index} {d.name} | {d.hostapi} | {player.samplerate} Hz x {player.channels} ch")
+        print(f"播放 {seconds:g} 秒 440 Hz 测试音...")
+        started = loop.time()
+        completed = await player.play(tone)
+        elapsed = loop.time() - started
+    print(f"{'完成' if completed else '已停止'}: 耗时 {elapsed:.2f} s, 欠载 {player.underruns} 次")
+    return 0 if completed else 1
 
 
 def log_startup(settings: Settings) -> None:
@@ -104,20 +133,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.record_test <= 0:
             print("--record-test 必须大于 0", file=sys.stderr)
             return 2
-        try:
-            return asyncio.run(record_test(settings, args.record_test, args.output))
-        except KeyboardInterrupt:
-            print("已中断", file=sys.stderr)
-            return 130
-        except TimeoutError:
-            print("采集失败: 2 秒内没有收到音频帧", file=sys.stderr)
-            return 1
-        except (LookupError, RuntimeError, sd.PortAudioError) as e:
-            print(f"采集失败: {e}", file=sys.stderr)
-            return 1
+        return _run_audio(record_test(settings, args.record_test, args.output), "采集", "2 秒内没有收到音频帧")
+    if args.play_test is not None:
+        if args.play_test <= 0:
+            print("--play-test 必须大于 0", file=sys.stderr)
+            return 2
+        return _run_audio(play_test(settings, args.play_test), "播放", "播放未在预期时间内结束")
 
     log_startup(settings)
     return 0
+
+
+def _run_audio(coro, action: str, timeout_message: str) -> int:
+    try:
+        return asyncio.run(coro)
+    except KeyboardInterrupt:
+        print("已中断", file=sys.stderr)
+        return 130
+    except TimeoutError:
+        print(f"{action}失败: {timeout_message}", file=sys.stderr)
+        return 1
+    except (LookupError, RuntimeError, sd.PortAudioError) as e:
+        print(f"{action}失败: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

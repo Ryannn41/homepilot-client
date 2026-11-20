@@ -75,21 +75,38 @@ def list_devices(preferred_hostapi: str = "wasapi") -> list[Device]:
 
 def find_input_device(spec: str = "", preferred_hostapi: str = "wasapi") -> Device:
     """按配置解析输入设备：空为首选 Host API 的默认输入，纯数字为索引，否则为名称子串。"""
-    candidates = [d for d in list_devices(preferred_hostapi) if d.max_input_channels > 0]
+    return _find_device(spec, preferred_hostapi, "input")
+
+
+def find_output_device(spec: str = "", preferred_hostapi: str = "wasapi") -> Device:
+    """按配置解析输出设备，规则同 find_input_device。"""
+    return _find_device(spec, preferred_hostapi, "output")
+
+
+def _find_device(spec: str, preferred_hostapi: str, kind: Kind) -> Device:
+    label = "输入" if kind == "input" else "输出"
+
+    def usable(d: Device) -> bool:
+        return (d.max_input_channels if kind == "input" else d.max_output_channels) > 0
+
+    def is_default(d: Device) -> bool:
+        return d.is_default_input if kind == "input" else d.is_default_output
+
+    candidates = [d for d in list_devices(preferred_hostapi) if usable(d)]
     if not candidates:
-        raise LookupError("没有可用的输入设备")
+        raise LookupError(f"没有可用的{label}设备")
     spec = spec.strip()
     if not spec:
-        return next((d for d in candidates if d.is_default_input), candidates[0])
+        return next((d for d in candidates if is_default(d)), candidates[0])
     if spec.isdigit():
         for d in candidates:
             if d.index == int(spec):
                 return d
-        raise LookupError(f"输入设备 #{spec} 不存在或没有输入通道")
+        raise LookupError(f"{label}设备 #{spec} 不存在或没有{label}通道")
     for d in candidates:
         if spec.lower() in d.name.lower():
             return d
-    raise LookupError(f"找不到名称包含 {spec!r} 的输入设备")
+    raise LookupError(f"找不到名称包含 {spec!r} 的{label}设备")
 
 
 def probe(device: Device, kind: Kind) -> list[ProbeResult]:
