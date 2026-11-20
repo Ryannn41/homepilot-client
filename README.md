@@ -177,6 +177,55 @@ python -m app.main --kws-test 30     # 检测 30 秒
 
 检测到唤醒词时打印 `>>> 唤醒: 你好小余  帧 #N  t=...s`，每 3 秒打印一次麦克风电平。误唤醒多时调高 `HOMEPILOT_KWS_KEYWORDS_THRESHOLD`，漏检多时调低。
 
+## 语音活动检测（VAD）与预缓冲
+
+使用 sherpa-onnx 内置的 [Silero VAD](https://github.com/snakers4/silero-vad)，直接处理 `AudioCapture` 输出的 16kHz PCM16 帧，不再重采样。
+
+### 下载模型
+
+```powershell
+cd models
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+```
+
+约 630 KB，放在 `models/` 下（已被 `.gitignore` 忽略）。
+
+### 配置
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HOMEPILOT_VAD_MODEL` | `models/silero_vad.onnx` | 模型路径 |
+| `HOMEPILOT_VAD_THRESHOLD` | `0.5` | 语音概率阈值（0~1），噪声误触发多时调高 |
+| `HOMEPILOT_VAD_MIN_SPEECH_MS` | `250` | 连续语音达到该时长才判定开始 |
+| `HOMEPILOT_VAD_MIN_SILENCE_MS` | `700` | 静音持续该时长才判定结束，不会因单个静音窗口提前结束 |
+| `HOMEPILOT_VAD_MAX_SPEECH_S` | `30` | 单个片段最长时长，超过后强制结束 |
+| `HOMEPILOT_PREROLL_MS` | `500` | 预缓冲时长（200~1000），20ms 分片时为 25 帧 |
+
+### 工作方式
+
+```python
+with VADDetector(settings) as vad:
+    for event in vad.process(frame):   # 每次一帧 20ms / 640 字节
+        ...                            # SpeechStart / SpeechAudio / SpeechEnd
+```
+
+- 未说话时每帧进入有界预缓冲（`deque`，满时淘汰最旧帧）。
+- VAD 判定开始时返回 `SpeechStart`，`frames` 为预缓冲中的帧（含当前帧），随后清空预缓冲；之后每帧返回 `SpeechAudio`。每一帧只交付一次，上层可以边收边上传。
+- 静音持续 `VAD_MIN_SILENCE_MS` 后返回 `SpeechEnd`，`frames` 为完整片段（含预缓冲和结尾静音），附起止帧序号和时长。
+- 达到最长时长时返回 `truncated=True` 的 `SpeechEnd`，并等待用户停顿后才开始新片段，避免把截断后的语音混入下一段。
+- `reset()` 丢弃预缓冲、未结束的片段和模型状态；`close()` 后再调用 `process()` 会抛 `RuntimeError`。
+
+实测（Windows，真实模型）：VAD 判定开始比实际发声晚约 300ms，主要来自 `VAD_MIN_SPEECH_MS`，因此预缓冲需大于 `VAD_MIN_SPEECH_MS` + 约 60ms；默认 500ms 下片段会在发声前额外保留约 150~200ms。单帧推理平均约 0.06ms（实时采集时约 0.2ms），远小于 20ms 帧长，因此直接在事件循环中同步调用，不使用线程。
+
+### 测试
+
+```powershell
+python -m app.main --vad-test                          # 持续检测，Ctrl+C 退出
+python -m app.main --vad-test 60 --vad-save vad_segments   # 检测 60 秒并把每个片段保存为 WAV
+```
+
+开始时打印 `>>> 语音开始`（判定时间、片段起点、预缓冲帧数），结束时打印 `<<< 语音结束`（时长、帧数、电平），退出时打印片段数量、总时长和 VAD 平均/最大耗时。保存的 WAV 可用来检查开头和结尾是否完整（`*.wav` 已被 `.gitignore` 忽略）。
+
 ## 重采样
 
 `app/audio/resample.py` 中的 `StreamResampler` 把连续的单声道 PCM16（一维 `np.int16`）从设备采样率流式转换为 16kHz：

@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     kws_keywords_threshold: float = Field(default=0.25, gt=0, lt=1)
     kws_num_threads: int = Field(default=1, ge=1)
 
+    # 语音活动检测（sherpa-onnx Silero VAD）
+    vad_model: str = "models/silero_vad.onnx"
+    vad_threshold: float = Field(default=0.5, gt=0, lt=1)
+    vad_min_speech_ms: int = Field(default=250, ge=32)  # 连续语音达到该时长才判定开始
+    vad_min_silence_ms: int = Field(default=700, ge=100)  # 静音持续该时长才判定结束
+    vad_max_speech_s: float = Field(default=30.0, gt=0, le=120)
+    preroll_ms: int = Field(default=500, ge=200, le=1000)
+
     silence_timeout_s: float = Field(default=15.0, gt=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
@@ -51,3 +59,7 @@ class Settings(BaseSettings):
     @property
     def frame_samples(self) -> int:
         return SAMPLE_RATE * self.frame_ms // 1000
+
+    @property
+    def preroll_frames(self) -> int:
+        return self.preroll_ms // self.frame_ms

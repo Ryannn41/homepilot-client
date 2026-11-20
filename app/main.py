@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 import wave
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
@@ -12,6 +14,7 @@ from app import __version__
 from app.audio import devices
 from app.audio.capture import AudioCapture
 from app.audio.player import AudioPlayer
+from app.audio.vad import SpeechAudio, SpeechStart, VADDetector
 from app.audio.wakeword import WakeWordDetector
 from app.config import SAMPLE_RATE, SAMPLE_WIDTH, Settings
 
@@ -29,7 +32,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--kws-test", type=float, nargs="?", const=0.0, metavar="SECONDS",
         help="从麦克风检测唤醒词；可选时长，省略则一直运行到 Ctrl+C",
     )
+    group.add_argument(
+        "--vad-test", type=float, nargs="?", const=0.0, metavar="SECONDS",
+        help="从麦克风检测语音片段；可选时长，省略则一直运行到 Ctrl+C",
+    )
     parser.add_argument("--output", default="record_test.wav", help="--record-test 的 WAV 输出路径")
+    parser.add_argument("--vad-save", metavar="DIR", help="--vad-test 时把每个语音片段保存为 WAV 到该目录")
     return parser.parse_args(argv)
 
 
@@ -56,11 +64,7 @@ async def record_test(settings: Settings, seconds: float, output: str) -> int:
                 print(f"  {len(frames) // per_second:3d}s  {_level(pcm)}")
         dropped, overflows = cap.dropped_frames, cap.overflow_count
 
-    with wave.open(output, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(SAMPLE_WIDTH)
-        w.setframerate(SAMPLE_RATE)
-        w.writeframes(b"".join(frames))
+    _write_wav(output, b"".join(frames))
     total = sum(len(f) for f in frames) // SAMPLE_WIDTH
     print(f"完成: {len(frames)} 帧, {total} 样本 ({total / SAMPLE_RATE:.2f} s), "
           f"丢帧 {dropped}, 输入溢出 {overflows}")
@@ -123,6 +127,60 @@ async def kws_test(settings: Settings, seconds: float) -> int:
     return 0
 
 
+async def vad_test(settings: Settings, seconds: float, save_dir: str | None) -> int:
+    ms = settings.frame_ms
+    max_frames = int(seconds * 1000 / ms) if seconds > 0 else None
+    out = Path(save_dir) if save_dir else None
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
+    segments, speech_s, streamed = 0, 0.0, 0
+    costs: list[float] = []
+    with VADDetector(settings) as vad:
+        async with AudioCapture(settings) as cap:
+            d = cap.device
+            print(f"设备: #{d.index} {d.name} | {d.hostapi} | {cap.samplerate} Hz x {cap.channels} ch")
+            print(f"预缓冲 {settings.preroll_frames} 帧 ({settings.preroll_frames * ms} ms)，"
+                  f"结束静音 {settings.vad_min_silence_ms} ms；请说话（Ctrl+C 退出）")
+            frames = 0
+            while max_frames is None or frames < max_frames:
+                frame = await asyncio.wait_for(cap.read(), timeout=2.0)
+                frames += 1
+                t0 = time.perf_counter()
+                events = vad.process(frame)
+                costs.append(time.perf_counter() - t0)
+                for ev in events:
+                    if isinstance(ev, SpeechStart):
+                        streamed = len(ev.frames)
+                        print(f">>> 语音开始  t={ev.detected_frame * ms / 1000:.2f}s  "
+                              f"片段起点 t={ev.start_frame * ms / 1000:.2f}s  预缓冲 {len(ev.frames)} 帧")
+                    elif isinstance(ev, SpeechAudio):
+                        streamed += 1
+                    else:
+                        segments += 1
+                        speech_s += ev.duration_s
+                        note = "（达到最长时长，已截断）" if ev.truncated else ""
+                        print(f"<<< 语音结束  t={ev.end_frame * ms / 1000:.2f}s  时长 {ev.duration_s:.2f}s  "
+                              f"{len(ev.frames)} 帧  流式交付 {streamed} 帧{note}")
+                        print(f"    {_level(np.frombuffer(ev.pcm, dtype=np.int16))}")
+                        if out:
+                            path = out / f"segment_{segments:03d}.wav"
+                            _write_wav(path, ev.pcm)
+                            print(f"    已保存: {path}")
+    c = np.array(costs) * 1000 if costs else np.zeros(1)
+    print(f"结束: 共 {frames} 帧 ({frames * ms / 1000:.1f}s), 语音片段 {segments} 个, 语音总时长 {speech_s:.2f}s, "
+          f"丢帧 {cap.dropped_frames}")
+    print(f"VAD 耗时/帧: 平均 {c.mean():.3f} ms, 最大 {c.max():.3f} ms")
+    return 0
+
+
+def _write_wav(path, pcm: bytes) -> None:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(SAMPLE_WIDTH)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(pcm)
+
+
 def log_startup(settings: Settings) -> None:
     log.info("HomePilot Client %s 启动", __version__)
     log.info("服务端地址: %s", settings.server_url)
@@ -180,6 +238,15 @@ def main(argv: list[str] | None = None) -> int:
             return _run_audio(kws_test(settings, args.kws_test), "唤醒检测", "2 秒内没有收到音频帧")
         except (FileNotFoundError, ValueError) as e:
             print(f"唤醒检测失败: {e}", file=sys.stderr)
+            return 1
+    if args.vad_test is not None:
+        if args.vad_test < 0:
+            print("--vad-test 时长不能为负数", file=sys.stderr)
+            return 2
+        try:
+            return _run_audio(vad_test(settings, args.vad_test, args.vad_save), "语音检测", "2 秒内没有收到音频帧")
+        except (FileNotFoundError, ValueError) as e:
+            print(f"语音检测失败: {e}", file=sys.stderr)
             return 1
 
     log_startup(settings)
