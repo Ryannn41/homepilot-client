@@ -16,6 +16,8 @@ from app.audio.capture import AudioCapture
 from app.audio.player import AudioPlayer
 from app.audio.vad import SpeechAudio, SpeechStart, VADDetector
 from app.audio.wakeword import WakeWordDetector
+from app.client import Disconnected, VoiceClient
+from app.protocol import AudioFrame, ServerEvent
 from app.config import SAMPLE_RATE, SAMPLE_WIDTH, Settings
 
 log = logging.getLogger("homepilot")
@@ -35,6 +37,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     group.add_argument(
         "--vad-test", type=float, nargs="?", const=0.0, metavar="SECONDS",
         help="从麦克风检测语音片段；可选时长，省略则一直运行到 Ctrl+C",
+    )
+    group.add_argument(
+        "--ws-test", type=int, nargs="?", const=0, metavar="TURNS",
+        help="联调服务端：录一句话上传并播放响应；可选轮数，省略则一直运行到 Ctrl+C",
     )
     parser.add_argument("--output", default="record_test.wav", help="--record-test 的 WAV 输出路径")
     parser.add_argument("--vad-save", metavar="DIR", help="--vad-test 时把每个语音片段保存为 WAV 到该目录")
@@ -173,6 +179,107 @@ async def vad_test(settings: Settings, seconds: float, save_dir: str | None) -> 
     return 0
 
 
+RESPONSE_TIMEOUT_S = 20.0
+
+
+async def ws_test(settings: Settings, turns: int) -> int:
+    done = 0
+    async with VoiceClient(settings) as client:
+        print(f"连接 {settings.server_url} ...")
+        if not await client.wait_connected(timeout=10):
+            print("10 秒内未能连接服务端（模拟服务端：python -m tools.mock_server）", file=sys.stderr)
+            return 1
+        with VADDetector(settings) as vad:
+            async with AudioCapture(settings) as cap:
+                d = cap.device
+                print(f"设备: #{d.index} {d.name} | {d.hostapi} | {cap.samplerate} Hz x {cap.channels} ch")
+                while turns == 0 or done < turns:
+                    if not client.connected:
+                        print("... 等待重连")
+                        await client.wait_connected(timeout=3600)
+                    if client.session_id is None:
+                        if await client.start_session() is None:
+                            continue
+                        print(f"会话开始: session={client.session_id}")
+                    while not cap.queue.empty():  # 丢弃播放期间积压的麦克风帧（半双工）
+                        cap.queue.get_nowait()
+                    vad.reset()
+                    print(f"[第 {done + 1} 轮] 请说一句话 ...")
+                    if not await _upload_utterance(client, cap, vad, settings.frame_ms):
+                        print("!!! 上传中断：连接已断开")
+                        continue
+                    await _play_response(client, settings)
+                    done += 1
+        await client.end_session("ws-test 结束")
+    print(f"结束: 完成 {done} 轮, 上传 {client.sent_frames} 帧, 离线丢弃 {client.dropped_offline} 帧, "
+          f"过期丢弃 {client.dropped_stale}, 重复丢弃 {client.dropped_duplicate}, 缺帧 {client.seq_gaps}, "
+          f"非法 {client.dropped_invalid}")
+    return 0
+
+
+async def _upload_utterance(client: VoiceClient, cap: AudioCapture, vad: VADDetector, frame_ms: int) -> bool:
+    ok = False
+    while True:
+        frame = await asyncio.wait_for(cap.read(), timeout=2.0)
+        for ev in vad.process(frame):
+            if isinstance(ev, SpeechStart):
+                turn = await client.start_input()
+                ok = turn is not None
+                for f in ev.frames:
+                    ok = ok and await client.send_audio(f)
+                print(f">>> 语音开始，turn={turn}，先上传预缓冲 {len(ev.frames)} 帧")
+            elif isinstance(ev, SpeechAudio):
+                ok = ok and await client.send_audio(ev.frame)
+            else:
+                ok = ok and await client.end_input(ev.truncated)
+                print(f"<<< 语音结束，时长 {ev.duration_s:.2f}s，{len(ev.frames)} 帧"
+                      f"{'（已截断）' if ev.truncated else ''}，input.end {'已发送' if ok else '未发送'}")
+                return ok
+
+
+async def _play_response(client: VoiceClient, settings: Settings) -> None:
+    loop = asyncio.get_running_loop()
+    sent_at = loop.time()
+    player: AudioPlayer | None = None
+    frames = 0
+    try:
+        while True:
+            remaining = RESPONSE_TIMEOUT_S - (loop.time() - sent_at)
+            try:
+                item = await asyncio.wait_for(client.recv(), timeout=max(remaining, 0.01))
+            except TimeoutError:
+                print(f"!!! {RESPONSE_TIMEOUT_S:g} 秒内未收到完整响应，取消本轮")
+                await client.cancel_turn("timeout")
+                return
+            elapsed_ms = (loop.time() - sent_at) * 1000
+            if isinstance(item, AudioFrame):
+                if player is None:
+                    continue
+                if frames == 0:
+                    print(f"    首个音频帧: +{elapsed_ms:.0f} ms")
+                frames += 1
+                await player.write(item.pcm)
+            elif isinstance(item, Disconnected):
+                print(f"!!! 连接断开: {item.reason}")
+                return
+            elif isinstance(item, ServerEvent):
+                text = item.data.get("text") or item.data.get("message") or ""
+                print(f"    {item.type} +{elapsed_ms:.0f} ms {text}")
+                if item.type == "response.audio.start":
+                    player = AudioPlayer(settings)
+                    player.start()
+                elif item.type == "response.audio.end":
+                    if player is not None:
+                        await player.drain()
+                    print(f"    播放完成: {frames} 帧 ({frames * settings.frame_ms / 1000:.2f}s)")
+                    return
+                elif item.type == "error":
+                    return
+    finally:
+        if player is not None:
+            player.stop()
+
+
 def _write_wav(path, pcm: bytes) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
@@ -247,6 +354,15 @@ def main(argv: list[str] | None = None) -> int:
             return _run_audio(vad_test(settings, args.vad_test, args.vad_save), "语音检测", "2 秒内没有收到音频帧")
         except (FileNotFoundError, ValueError) as e:
             print(f"语音检测失败: {e}", file=sys.stderr)
+            return 1
+    if args.ws_test is not None:
+        if args.ws_test < 0:
+            print("--ws-test 轮数不能为负数", file=sys.stderr)
+            return 2
+        try:
+            return _run_audio(ws_test(settings, args.ws_test), "联调", "2 秒内没有收到音频帧")
+        except (FileNotFoundError, ValueError) as e:
+            print(f"联调失败: {e}", file=sys.stderr)
             return 1
 
     log_startup(settings)

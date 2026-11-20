@@ -42,6 +42,8 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 | numpy | 音频数据处理 |
 | scipy | 采样率转换（`resample_poly`） |
 | sounddevice | 音频采集和播放（Windows wheel 自带 PortAudio） |
+| sherpa-onnx | 本地唤醒词检测（KWS）和语音活动检测（VAD） |
+| websockets | 与云端的 WebSocket 通信 |
 | pytest | 单元测试 |
 
 ## 配置
@@ -57,6 +59,9 @@ copy .env.example .env
 | `HOMEPILOT_SERVER_URL` | `ws://127.0.0.1:8000/ws/voice/` | 云端 Agent 的 WebSocket 地址 |
 | `HOMEPILOT_DEVICE_ID` | `homepilot-dev` | 本设备的唯一标识 |
 | `HOMEPILOT_AUTH_TOKEN` | 空 | 云端认证令牌，日志中不会打印明文 |
+| `HOMEPILOT_RECONNECT_MIN_S` | `1` | 断线重连的首次等待秒数，之后翻倍 |
+| `HOMEPILOT_RECONNECT_MAX_S` | `30` | 断线重连的最长等待秒数 |
+| `HOMEPILOT_PING_INTERVAL_S` | `20` | WebSocket 心跳间隔，同时作为心跳超时 |
 | `HOMEPILOT_INPUT_DEVICE` | 空（系统默认） | 输入设备索引或名称子串 |
 | `HOMEPILOT_OUTPUT_DEVICE` | 空（系统默认） | 输出设备索引或名称子串 |
 | `HOMEPILOT_AUDIO_HOSTAPI` | `wasapi` | 优先使用的 Host API：`wasapi` / `mme` / `directsound` |
@@ -225,6 +230,40 @@ python -m app.main --vad-test 60 --vad-save vad_segments   # 检测 60 秒并把
 ```
 
 开始时打印 `>>> 语音开始`（判定时间、片段起点、预缓冲帧数），结束时打印 `<<< 语音结束`（时长、帧数、电平），退出时打印片段数量、总时长和 VAD 平均/最大耗时。保存的 WAV 可用来检查开头和结尾是否完整（`*.wav` 已被 `.gitignore` 忽略）。
+
+## WebSocket 通信
+
+协议说明见 [docs/protocol.md](docs/protocol.md)：24 字节头部（版本、类型、turn_id、seq）+ 16kHz PCM16 的二进制音频帧，加上 `session.start` / `input.start` / `input.end` / `transcript` / `response.*` 等 JSON 事件。
+
+`app/client.py` 中的 `VoiceClient` 启动后常驻长连接，断线自动重连：
+
+```python
+async with VoiceClient(settings) as client:
+    await client.start_session()         # 生成 session_id
+    await client.start_input()           # 生成 turn_id，seq 从 0 开始
+    await client.send_audio(frame)       # 自动编号 seq；离线时返回 False 并丢弃
+    await client.end_input()
+    item = await client.recv()           # ServerEvent / AudioFrame / Connected / Disconnected
+```
+
+- 只放行当前会话、当前轮次的事件和 TTS 音频；重复或乱序的帧丢弃，跳号记为缺口。
+- 断线时发出 `Disconnected`（附被作废的 turn_id），会话随之作废，重连后需重新 `start_session()`。
+- 连接时不走系统代理，也不启用 permessage-deflate 压缩。
+
+### 联调
+
+服务端尚未上线时，用仓库自带的模拟服务端：收到一句话后回一段模拟识别文本，并把这句话原样作为 TTS 发回。
+
+```powershell
+# 窗口 1：启动模拟服务端（默认 127.0.0.1:8000，与 HOMEPILOT_SERVER_URL 默认值一致）
+python -m tools.mock_server
+# 窗口 2：说一句话 -> VAD -> 上传 -> 接收并播放响应
+$env:HOMEPILOT_OUTPUT_DEVICE="HyperX"; python -m app.main --ws-test 3     # 3 轮，省略轮数则持续到 Ctrl+C
+```
+
+每轮打印 turn_id、上传帧数、收到的事件及相对 `input.end` 的耗时、播放帧数，结束时打印上传、离线丢弃、过期丢弃、重复、缺帧和非法消息的统计。运行中关闭再启动模拟服务端，可以验证自动重连。`--ws-test` 只是联调工具，不包含唤醒词和对话状态机。
+
+模拟服务端选项：`--port`、`--token xxx`（要求客户端携带对应的 `HOMEPILOT_AUTH_TOKEN`）、`--realtime`（按实时速度发送 TTS，默认尽快发送）。
 
 ## 重采样
 

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 内部音频与 WebSocket 音频的统一格式，不可配置
@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     server_url: str = "ws://127.0.0.1:8000/ws/voice/"
     device_id: str = "homepilot-dev"
     auth_token: SecretStr = SecretStr("")
+    # 断线重连：等待时间从 min 开始翻倍，最长 max，并加 ±20% 随机抖动
+    reconnect_min_s: float = Field(default=1.0, gt=0)
+    reconnect_max_s: float = Field(default=30.0, gt=0)
+    ping_interval_s: float = Field(default=20.0, gt=0)  # 心跳间隔，同时作为心跳超时
 
     # 空字符串表示使用系统默认设备；可填设备索引或名称子串
     input_device: str = ""
@@ -55,6 +59,12 @@ class Settings(BaseSettings):
         if v not in (20, 40):
             raise ValueError("frame_ms 只能是 20 或 40")
         return v
+
+    @model_validator(mode="after")
+    def _check_reconnect(self) -> "Settings":
+        if self.reconnect_max_s < self.reconnect_min_s:
+            raise ValueError("reconnect_max_s 不能小于 reconnect_min_s")
+        return self
 
     @property
     def frame_samples(self) -> int:
