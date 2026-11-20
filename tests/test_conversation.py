@@ -137,6 +137,13 @@ class FakeClient:
         for seq, pcm in enumerate(chunks):
             self.inbox.put_nowait(AudioFrame(KIND_TTS, self.turn_id, seq, pcm))
 
+    def notify(self, text, *chunks):
+        notify_id = uuid.uuid4()
+        self.inbox.put_nowait(ServerEvent("notify.start", None, None, {"notify_id": str(notify_id), "text": text}))
+        for seq, pcm in enumerate(chunks):
+            self.inbox.put_nowait(AudioFrame(KIND_TTS, notify_id, seq, pcm))
+        self.inbox.put_nowait(ServerEvent("notify.end", None, None, {"notify_id": str(notify_id)}))
+
     def disconnect(self):
         self.connected = False
         self.session_id = self.turn_id = None
@@ -390,6 +397,68 @@ def test_done_without_audio_goes_to_follow_up():
             h.client.server("response.done")
             await h.state(State.FOLLOW_UP)
             assert len(FakePlayer.instances) == 1
+    run(main())
+
+
+# ---- 定时提醒 ----
+
+def test_notice_in_idle_starts_session_and_follows_up():
+    async def main():
+        async with Harness(silence_timeout_s=0.3) as h:
+            h.client.notify("提醒你：开会", b"\x01\x00" * 320, b"\x02\x00" * 320)
+            await h.state(State.SPEAKING)
+            assert h.client.calls == ["session.start"]
+            await h.state(State.FOLLOW_UP)
+            played = sound(h.reply_player())
+            assert played == [h.conv._beep, b"\x01\x00" * 320 + b"\x02\x00" * 320]  # 提示音 + 拼接后的提醒语音
+            await h.speak()  # 不用唤醒词直接回应
+            assert h.client.calls == ["session.start", "input.start", "input.end"]
+    run(main())
+
+
+def test_notice_without_reply_is_not_false_wake():
+    async def main():
+        async with Harness(silence_timeout_s=0.2) as h:
+            h.client.notify("提醒你：吃药", b"\x01\x00" * 320)
+            await h.state(State.FOLLOW_UP)
+            await h.state(State.IDLE, timeout=1)
+            assert h.client.calls[-1] == ("session.end", "silence_timeout")
+            assert h.conv.stats.false_wakes == 0
+    run(main())
+
+
+def test_notice_waits_for_current_reply():
+    async def main():
+        async with Harness() as h:
+            await h.wake()
+            await h.speak()
+            h.client.notify("提醒你：开会", b"\x09\x00" * 320)
+            await h.settle()
+            assert h.conv.state is State.THINKING
+            h.client.server("response.audio.start", sample_rate=16000)
+            h.client.tts(b"\x01\x00" * 320)
+            h.client.server("response.audio.end")
+            h.client.server("response.done")
+            await h.until(lambda: len(FakePlayer.instances) == 3)  # 提示音、回复、提醒
+            reply, notice = FakePlayer.instances[1:]
+            assert sound(reply) == [b"\x01\x00" * 320]
+            assert sound(notice)[-1] == b"\x09\x00" * 320
+            assert h.client.calls.count("session.start") == 1
+            await h.state(State.FOLLOW_UP)
+    run(main())
+
+
+def test_partial_notice_dropped_on_disconnect():
+    async def main():
+        async with Harness() as h:
+            notify_id = uuid.uuid4()
+            h.client.inbox.put_nowait(ServerEvent("notify.start", None, None, {"notify_id": str(notify_id), "text": "x"}))
+            h.client.inbox.put_nowait(AudioFrame(KIND_TTS, notify_id, 0, b"\x01\x00" * 320))
+            h.client.disconnect()
+            h.client.inbox.put_nowait(ServerEvent("notify.end", None, None, {"notify_id": str(notify_id)}))
+            await h.until(lambda: h.conv.stats.disconnects == 1)
+            await h.settle()
+            assert h.conv.state is State.IDLE and FakePlayer.instances == []
     run(main())
 
 

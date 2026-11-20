@@ -102,8 +102,11 @@ SERVER_EVENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "response.audio.end": {},
     "response.done": {},
     "error": {"code": str, "message": str},
+    # 服务端主动推送的提醒，不属于任何会话；随后的 TTS 音频帧以 notify_id 作为 turn_id
+    "notify.start": {"notify_id": str, "text": str, "sample_rate": int},
+    "notify.end": {"notify_id": str},
 }
-_TURN_OPTIONAL = {"error"}
+_TURN_OPTIONAL = {"error", "notify.start", "notify.end"}
 
 
 def _parse_uuid(msg: dict, key: str, required: bool) -> uuid.UUID | None:
@@ -135,6 +138,8 @@ def decode_event(text: str) -> ServerEvent:
         value = msg.get(key)
         if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
             raise ProtocolError(f"{type_} 字段 {key} 缺失或类型错误: {value!r}")
-    if type_ == "response.audio.start" and msg["sample_rate"] != SAMPLE_RATE:
+    if type_ in ("response.audio.start", "notify.start") and msg["sample_rate"] != SAMPLE_RATE:
         raise ProtocolError(f"不支持的 TTS 采样率: {msg['sample_rate']}")
+    if type_.startswith("notify."):
+        _parse_uuid(msg, "notify_id", required=True)
     return ServerEvent(type_, session_id, turn_id, msg)

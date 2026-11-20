@@ -104,6 +104,29 @@ python -m app.main
 
 任何状态下断线都立即停止播放并回到 `IDLE`；服务端 `error` 会结束当前轮并进入 `FOLLOW_UP`。
 
+## 定时提醒
+
+服务端到点后会主动推送提醒（`notify.start`、若干音频帧、`notify.end`，见 [docs/protocol.md](docs/protocol.md)）。提醒不属于任何会话，客户端在任何状态下都会接收，收完整条后再播放：
+
+| 收到提醒时的状态 | 处理 |
+| --- | --- |
+| `IDLE` | 先发 `session.start` 开启会话，再播放 |
+| `LISTENING` / `FOLLOW_UP`，用户还没开口 | 直接在当前会话中播放 |
+| 用户正在说话、`THINKING`、`SPEAKING`，或正在播唤醒提示音 | 排队，等这一轮回复播完进入 `FOLLOW_UP` 后再播 |
+
+播放时先放提示音，再放提醒语音；播完进入 `FOLLOW_UP`，用户不说唤醒词就能直接回应（如「好的知道了」）。没人回应、静默超时回到 `IDLE` 时，不计为疑似误唤醒。多条提醒按到达顺序逐条播放。
+
+断线时，没收完的提醒直接丢弃；已收完的提醒仍会播放，但播完后没有会话，需要唤醒才能继续对话。正在播放的提醒会随断线一起停止。
+
+手动联调：
+
+```powershell
+# 窗口 1：每 60 秒推送一条模拟提醒
+python -m tools.mock_server --notify-every 60
+# 窗口 2
+python -m app.main
+```
+
 ## 长期运行与故障恢复
 
 `python -m app.main` 设计为常驻运行：
@@ -296,12 +319,12 @@ async with VoiceClient(settings) as client:
 # 窗口 1：启动模拟服务端（默认 127.0.0.1:8000，与 HOMEPILOT_SERVER_URL 默认值一致）
 python -m tools.mock_server
 # 窗口 2：说一句话 -> VAD -> 上传 -> 接收并播放响应
-$env:HOMEPILOT_OUTPUT_DEVICE="HyperX"; python -m app.main --ws-test 3     # 3 轮，省略轮数则持续到 Ctrl+C
+python -m app.main --ws-test 3     # 3 轮，省略轮数则持续到 Ctrl+C
 ```
 
 每轮打印 turn_id、上传帧数、收到的事件及相对 `input.end` 的耗时、播放帧数，结束时打印上传、离线丢弃、过期丢弃、重复、缺帧和非法消息的统计。运行中关闭再启动模拟服务端，可以验证自动重连。`--ws-test` 只是联调工具，不包含唤醒词和对话状态机。
 
-模拟服务端选项：`--port`、`--token xxx`（要求客户端携带对应的 `HOMEPILOT_AUTH_TOKEN`）、`--realtime`（按实时速度发送 TTS，默认尽快发送）。
+模拟服务端选项：`--port`、`--token xxx`（要求客户端携带对应的 `HOMEPILOT_AUTH_TOKEN`）、`--realtime`（按实时速度发送 TTS，默认尽快发送）、`--notify-every S`（客户端连上后每隔 S 秒推送一条模拟提醒，语音为三声提示音，见「定时提醒」）。
 
 ## 重采样
 

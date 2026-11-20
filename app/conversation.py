@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 
@@ -124,6 +125,9 @@ class Conversation:
         self._reply_token: object | None = None
         self._tail = False  # 播放已结束，正在等待余音消散
         self._session_turns = 0
+        self._notice_session = False  # 会话由提醒开启，不是唤醒，没人回应不算误唤醒
+        self._receiving: dict[uuid.UUID, tuple[str, list[bytes]]] = {}  # notify_id -> (文字, 已收到的音频)
+        self._notices: list[tuple[str, bytes]] = []  # 已收完、等待播放的提醒
         self._zero_frames = 0
         self._zero_limit = int(DIGITAL_SILENCE_S * 1000) // settings.frame_ms
 
@@ -138,6 +142,7 @@ class Conversation:
         end_reason = "shutdown"
         try:
             while True:
+                await self._play_notice_if_free()
                 if self._deadline is not None and loop.time() >= self._deadline:
                     self._deadline = None
                     await self._on_timeout()
@@ -202,6 +207,7 @@ class Conversation:
             return
         self.stats.wakes += 1
         self._session_turns = 0
+        self._notice_session = False
         self._listen(State.LISTENING, f"唤醒，session={self._client.session_id}")
         if self._settings.wake_sound:
             self._beep_token = self._speaker.start()
@@ -238,10 +244,13 @@ class Conversation:
             log.info("服务端已连接")
         elif isinstance(item, Disconnected):
             self.stats.disconnects += 1
+            self._receiving.clear()  # 没收完的提醒作废，已收完的照常播放
             if self.state is not State.IDLE:
                 await self._go_idle(f"连接断开: {item.reason}", end_reason=None)
         elif isinstance(item, AudioFrame):
-            if self.state is State.SPEAKING:
+            if item.turn_id in self._receiving:
+                self._receiving[item.turn_id][1].append(item.pcm)
+            elif self.state is State.SPEAKING:
                 self._speaker.feed(item.pcm)
         elif isinstance(item, ServerEvent):
             await self._on_server_event(item)
@@ -266,12 +275,43 @@ class Conversation:
             elif state is State.SPEAKING:
                 self._speaker.finish()
                 self._deadline = None
+        elif event.type == "notify.start":
+            log.info("收到提醒: %s", data["text"])
+            self._receiving[uuid.UUID(data["notify_id"])] = (data["text"], [])
+        elif event.type == "notify.end":
+            if received := self._receiving.pop(uuid.UUID(data["notify_id"]), None):
+                text, chunks = received
+                self._notices.append((text, b"".join(chunks)))
         elif event.type == "error":
             log.warning("服务端错误 %s: %s", data["code"], data["message"])
             if state in (State.THINKING, State.SPEAKING):
                 self._speaker.cancel()
                 await self._client.cancel_turn("error")
                 self._listen(State.FOLLOW_UP, "服务端错误")
+
+    async def _play_notice_if_free(self) -> None:
+        """有待播提醒且当前不在一轮对话中（没在说话、等回复或播放回复）时，播放一条提醒。
+
+        提醒按回复的方式播放（提示音 + 语音），播完进入 FOLLOW_UP，用户可以直接回应。
+        """
+        if not self._notices or self._uploading or self._beep_token is not None:
+            return
+        if self.state not in (State.IDLE, State.LISTENING, State.FOLLOW_UP):
+            return
+        text, pcm = self._notices.pop(0)
+        if self._client.session_id is None:
+            if await self._client.start_session() is None:
+                log.warning("会话开始失败，提醒播完后无法直接回应")
+            self._session_turns = 0
+            self._notice_session = True
+            self._kws.reset()
+        self._reply_token = self._speaker.start()
+        self._speaker.feed(self._beep)
+        self._speaker.feed(pcm)
+        self._speaker.finish()
+        self._deadline = None
+        self._tail = False
+        self._enter(State.SPEAKING, f"播放提醒：{text}")
 
     # ---- 播放与超时 ----
 
@@ -288,7 +328,7 @@ class Conversation:
     async def _on_timeout(self) -> None:
         state = self.state
         if state in (State.LISTENING, State.FOLLOW_UP) and not self._uploading:
-            if self._session_turns == 0:
+            if self._session_turns == 0 and not self._notice_session:
                 self.stats.false_wakes += 1
                 log.info("唤醒后没有说话（疑似误唤醒）")
             await self._go_idle(f"{self._settings.silence_timeout_s:g} 秒没有说话", end_reason="silence_timeout")

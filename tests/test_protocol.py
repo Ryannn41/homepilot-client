@@ -112,6 +112,13 @@ def test_decode_error_without_ids():
     assert ev.session_id is None and ev.turn_id is None and ev.data["code"] == "auth"
 
 
+def test_decode_notify_without_session():
+    ev = decode_event(json.dumps({"type": "notify.start", "notify_id": str(TURN), "text": "开会", "sample_rate": 16000}))
+    assert ev.session_id is None and ev.turn_id is None and ev.data["notify_id"] == str(TURN)
+    with pytest.raises(ProtocolError):
+        decode_event(json.dumps({"type": "notify.end", "notify_id": "not-a-uuid"}))
+
+
 @pytest.mark.parametrize("text,match", [
     ("{not json", "JSON"),
     ("[1, 2]", "对象"),

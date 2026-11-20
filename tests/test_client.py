@@ -320,6 +320,41 @@ def test_new_turn_and_cancel_drop_late_responses():
     asyncio.run(run())
 
 
+def test_notify_passes_without_session():
+    async def run():
+        async with RawServer() as srv, VoiceClient(make_settings(srv.url)) as client:
+            await expect(client, Connected)
+            notify = uuid.uuid4()
+            await srv.send_event("notify.start", None, None, notify_id=str(notify), text="提醒你：开会", sample_rate=16000)
+            for seq in range(2):
+                await srv.ws.send(pack_audio(KIND_TTS, notify, seq, pcm(seq)))
+            await srv.send_event("notify.end", None, None, notify_id=str(notify))
+            await srv.ws.send(pack_audio(KIND_TTS, notify, 2, pcm(2)))  # 结束后迟到的帧
+            items = await drain(client)
+            got = [(i.type if isinstance(i, ServerEvent) else i.seq) for i in items]
+            assert got == ["notify.start", 0, 1, "notify.end"]
+            assert client.dropped_stale == 1
+
+    asyncio.run(run())
+
+
+def test_mock_server_pushes_notify():
+    async def run():
+        async with MockServer(notify_every=0.1) as srv, VoiceClient(make_settings(srv.url)) as client:
+            await expect(client, Connected)
+            start = await expect(client, ServerEvent)
+            assert start.type == "notify.start" and start.data["text"] == "（模拟提醒）第 1 条"
+            frames = []
+            while isinstance(item := await asyncio.wait_for(client.recv(), 2), AudioFrame):
+                frames.append(item)
+            end = item
+            assert end.type == "notify.end" and end.data["frames"] == len(frames) > 0
+            assert all(f.turn_id == uuid.UUID(start.data["notify_id"]) for f in frames)
+            assert [f.seq for f in frames] == list(range(len(frames)))
+
+    asyncio.run(run())
+
+
 def test_tts_seq_resets_on_audio_start():
     async def run():
         async with RawServer() as srv, VoiceClient(make_settings(srv.url)) as client:

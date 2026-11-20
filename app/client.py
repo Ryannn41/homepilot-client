@@ -46,6 +46,7 @@ class VoiceClient:
     - 上行：start_input() 生成 turn_id，send_audio() 按顺序分配 seq，end_input() 结束本轮输入。
     - 下行：recv() 依次返回服务端事件、TTS 音频帧和连接状态变化。只放行当前会话、当前轮次的
       消息；TTS 帧 seq 不大于上一帧的视为重复丢弃，跳号记为缺口但照常放行。
+      服务端主动推送的提醒（notify.*）及其音频帧不属于任何会话，始终放行。
     - 离线、会话或输入已因断线作废时，各发送方法返回 False/None，音频直接丢弃，不缓存。
     """
 
@@ -60,6 +61,7 @@ class VoiceClient:
         self._input_open = False
         self._seq = 0
         self._last_tts_seq = -1
+        self._notify_ids: set[uuid.UUID] = set()  # 正在接收音频的提醒
         self.sent_frames = 0
         self.dropped_offline = 0
         self.dropped_stale = 0
@@ -214,6 +216,7 @@ class VoiceClient:
                     aborted = self.turn_id
                     self.session_id = self.turn_id = None
                     self._input_open = False
+                    self._notify_ids.clear()
                     self._put(Disconnected(reason or "连接已关闭", aborted))
             delay = next_delay(delay, s)
             wait = delay * random.uniform(0.8, 1.2)
@@ -229,6 +232,14 @@ class VoiceClient:
         except ProtocolError as e:
             self.dropped_invalid += 1
             log.warning("丢弃非法事件: %s", e)
+            return
+        if event.type.startswith("notify."):  # 主动推送的提醒不属于任何会话，始终放行
+            notify_id = uuid.UUID(event.data["notify_id"])
+            if event.type == "notify.start":
+                self._notify_ids.add(notify_id)
+            else:
+                self._notify_ids.discard(notify_id)
+            self._put(event)
             return
         if event.session_id is not None and event.session_id != self.session_id:
             self._drop_stale(event.type, event.session_id, event.turn_id)
@@ -250,6 +261,9 @@ class VoiceClient:
         if frame.kind != KIND_TTS:
             self.dropped_invalid += 1
             log.warning("丢弃非 TTS 类型的下行音频帧: kind=%d", frame.kind)
+            return
+        if frame.turn_id in self._notify_ids:
+            self._put(frame)
             return
         if frame.turn_id != self.turn_id:
             self._drop_stale("audio", None, frame.turn_id)

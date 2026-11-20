@@ -76,6 +76,8 @@ turn_id = uuid.UUID(bytes=turn)
 | `response.audio.end` | `turn_id`，可选 `frames` | 该段 TTS 音频发送完毕 |
 | `response.done` | `turn_id` | 本轮回复全部结束（文本、所有语音段）。**每一轮必须发送**，包括只有文本、没有语音的回复 |
 | `error` | `code`、`message`，可选 `session_id`、`turn_id` | 错误。与会话无关的错误可以不带 `session_id` |
+| `notify.start` | `notify_id`（UUID）、`text`（string）、`sample_rate`（必须为 16000） | 服务端主动推送（如定时提醒），不属于任何会话，不带 `session_id`、`turn_id`。随后的下行音频帧以 `notify_id` 作为 `turn_id`，`seq` 从 0 开始 |
+| `notify.end` | `notify_id`，可选 `frames` | 该条推送的音频发送完毕 |
 
 客户端对字段缺失、类型错误、`type` 未知或 `sample_rate` 不是 16000 的事件，丢弃并记录日志。
 
@@ -109,12 +111,13 @@ turn_id = uuid.UUID(bytes=turn)
 - 同一 turn 内可以有多段 `response.audio.start` … `response.audio.end`，每段的下行 `seq` 都从 0 开始；客户端把它们连续播放。
 - 客户端收到 `response.done` 并播放完所有语音后，进入连续对话（追问）状态。如果 `input.end` 后 20 秒内没有收到回复，或 `response.audio.end` 后 20 秒内没有收到 `response.done`，客户端分别发送 `turn.cancel` 或按回复结束处理。
 - 服务端对某一轮发送 `error` 后，客户端发送 `turn.cancel` 并进入追问状态。
+- 服务端可以随时发送 `notify.start` … `notify.end`。客户端收完整条音频后再播放：如果用户正在说话、等待回复或正在播放回复，就等这一轮结束后再播；空闲时先发送 `session.start` 开启会话。播放时先放提示音，播完进入追问状态，用户可以不说唤醒词直接回应。
 
 ## 7. 接收方规则
 
 客户端：
 
-- 只接受 `session_id` 等于当前会话、`turn_id` 等于当前轮次的事件和音频；其余视为过期消息丢弃。发出新的 `input.start`、`turn.cancel` 或 `session.end` 后，旧轮次的所有消息都会被丢弃。
+- 只接受 `session_id` 等于当前会话、`turn_id` 等于当前轮次的事件和音频；其余视为过期消息丢弃。例外是 `notify.*` 事件，以及 `turn_id` 为某个已开始、未结束的 `notify_id` 的音频帧，它们始终接受。发出新的 `input.start`、`turn.cancel` 或 `session.end` 后，旧轮次的所有消息都会被丢弃。
 - 下行音频 `seq` 小于或等于上一帧的视为重复或乱序，丢弃；出现跳号时记录缺口，但照常播放后续帧。
 - 下行音频 `kind` 必须为 2。
 
