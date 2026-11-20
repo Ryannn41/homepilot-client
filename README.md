@@ -93,6 +93,19 @@ python -m app.main --probe          # 探测每个设备在 16000/44100/48000 Hz
 
 注意：这一步只检查格式是否被接受，不实际打开音频流；最终能否正常采集和播放，在后续录音、播放测试中验证。WASAPI 共享模式通常只接受系统混音采样率（常见为 48000 Hz），因此客户端会在本地重采样到 16kHz。
 
+## 重采样
+
+`app/audio/resample.py` 中的 `StreamResampler` 把连续的单声道 PCM16（一维 `np.int16`）从设备采样率流式转换为 16kHz：
+
+```python
+r = StreamResampler(48000, 16000)
+for block in blocks:          # 任意长度的连续 int16 块
+    out = r.process(block)    # 返回当前可确定的输出，可能为空
+out_tail = r.flush()          # 流结束时取出尾部，之后不能再 process
+```
+
+分块处理的结果与对整段音频调用 `scipy.signal.resample_poly` 一致（误差不超过 1 LSB）；采样率之比化简后分子或分母超过 1000 时会拒绝。
+
 ## 测试
 
 ```powershell
