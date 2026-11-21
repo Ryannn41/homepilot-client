@@ -1,10 +1,10 @@
-﻿# 连接本机服务端（homepilot-agent 或 tools.mock_server），本地开发测试用。
-# 用法：.\start-local.ps1 [app.main 的参数，如 --ws-test 3]
+# 连接云端 homepilot-agent。服务端开启令牌校验时，需在 .env 中配置 HOMEPILOT_AUTH_TOKEN。
+# 用法：复制为 start-cloud.ps1，把下面的地址改成你的服务端，再执行 .\start-cloud.ps1 [参数]
 $ErrorActionPreference = "Stop"
 
 # 脚本在当前会话中运行，结束后恢复工作目录和环境变量，避免影响之后的命令
 $previous = $env:HOMEPILOT_SERVER_URL
-$env:HOMEPILOT_SERVER_URL = "ws://127.0.0.1:8000/ws/voice/"
+$env:HOMEPILOT_SERVER_URL = "ws://YOUR_HOST:PORT/ws/voice/"
 Push-Location $PSScriptRoot
 try {
     python -m app.main @args

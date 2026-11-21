@@ -91,9 +91,15 @@ python -m app.main
 
 服务端尚未上线时，先在另一个窗口运行 `python -m tools.mock_server`（见「WebSocket 通信 / 联调」）。
 
-根目录的两个脚本只覆盖服务端地址，其余配置仍取自 `.env`，额外参数原样传给 `app.main`：
+根目录的 `start-*.cmd` / `start-*.ps1` 只覆盖服务端地址，其余配置仍取自 `.env`，额外参数原样传给 `app.main`。**这些脚本不入库**（避免暴露私有地址），请从模板复制并改名：
 
 ```powershell
+copy start-local.cmd.example start-local.cmd
+copy start-local.ps1.example start-local.ps1
+copy start-cloud.cmd.example start-cloud.cmd
+copy start-cloud.ps1.example start-cloud.ps1
+# 编辑 start-cloud.ps1，把 ws://YOUR_HOST:PORT/ws/voice/ 改成你的云端地址
+
 .\start-local.cmd                # 推荐：不受执行策略限制（含 \\wsl.localhost\... 路径）
 .\start-cloud.cmd
 .\start-cloud.cmd --ws-test 3    # 带参数

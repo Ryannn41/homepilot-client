@@ -16,3 +16,9 @@ models/*
 .vscode/
 .idea/
 logs/
+
+# Windows 启动脚本（可含私有服务端地址），从仓库中的 *.example 复制后本地使用
+start-local.ps1
+start-cloud.ps1
+start-local.cmd
+start-cloud.cmd
