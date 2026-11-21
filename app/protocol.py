@@ -105,8 +105,14 @@ SERVER_EVENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     # 服务端主动推送的提醒，不属于任何会话；随后的 TTS 音频帧以 notify_id 作为 turn_id
     "notify.start": {"notify_id": str, "text": str, "sample_rate": int},
     "notify.end": {"notify_id": str},
+    # 日程看板快照，不属于任何会话
+    "schedule.snapshot": {"version": int},
+    "schedule.updated": {"version": int},
 }
-_TURN_OPTIONAL = {"error", "notify.start", "notify.end"}
+_TURN_OPTIONAL = {"error", "notify.start", "notify.end", "schedule.snapshot", "schedule.updated"}
+
+_SCHEDULE_ITEM_KEYS = frozenset({"id", "kind", "title", "status", "due_at", "countdown_sec", "column"})
+_SCHEDULE_KINDS = frozenset({"reminder", "task", "countdown"})
 
 
 def _parse_uuid(msg: dict, key: str, required: bool) -> uuid.UUID | None:
@@ -142,4 +148,38 @@ def decode_event(text: str) -> ServerEvent:
         raise ProtocolError(f"不支持的 TTS 采样率: {msg['sample_rate']}")
     if type_.startswith("notify."):
         _parse_uuid(msg, "notify_id", required=True)
+    if type_.startswith("schedule."):
+        _validate_schedule_items(msg.get("items"))
     return ServerEvent(type_, session_id, turn_id, msg)
+
+
+def _validate_schedule_items(items: Any) -> None:
+    if items is None:
+        raise ProtocolError("schedule 事件缺少 items")
+    if not isinstance(items, list):
+        raise ProtocolError("schedule.items 必须是数组")
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ProtocolError(f"schedule.items[{i}] 必须是对象")
+        for key in ("id", "kind", "title", "status"):
+            value = item.get(key)
+            if not isinstance(value, str) or not value:
+                raise ProtocolError(f"schedule.items[{i}] 缺少或非法字段 {key}")
+        try:
+            uuid.UUID(item["id"])
+        except (ValueError, TypeError, AttributeError):
+            raise ProtocolError(f"schedule.items[{i}].id 不是合法 UUID: {item['id']!r}") from None
+        if item["kind"] not in _SCHEDULE_KINDS:
+            raise ProtocolError(f"schedule.items[{i}].kind 不支持: {item['kind']!r}")
+        extra = set(item) - _SCHEDULE_ITEM_KEYS
+        if extra:
+            raise ProtocolError(f"schedule.items[{i}] 含未知字段: {extra}")
+        due = item.get("due_at")
+        if due is not None and not isinstance(due, str):
+            raise ProtocolError(f"schedule.items[{i}].due_at 必须是字符串")
+        cd = item.get("countdown_sec")
+        if cd is not None and (not isinstance(cd, int) or isinstance(cd, bool)):
+            raise ProtocolError(f"schedule.items[{i}].countdown_sec 必须是整数")
+        col = item.get("column")
+        if col is not None and not isinstance(col, str):
+            raise ProtocolError(f"schedule.items[{i}].column 必须是字符串")

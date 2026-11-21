@@ -8,7 +8,6 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 import numpy as np
-import psutil
 import sounddevice as sd
 from pydantic import ValidationError
 
@@ -20,7 +19,8 @@ from app.audio.vad import SpeechAudio, SpeechStart, VADDetector
 from app.audio.wakeword import WakeWordDetector
 from app.client import Disconnected, VoiceClient
 from app.config import SAMPLE_RATE, SAMPLE_WIDTH, Settings
-from app.conversation import AudioDeviceError, Conversation, Stats
+from app.assistant import run_assistant
+from app.conversation import AudioDeviceError
 from app.protocol import AudioFrame, ServerEvent
 
 log = logging.getLogger("homepilot")
@@ -391,84 +391,6 @@ def setup_file_logging(settings: Settings) -> logging.Handler | None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
-
-
-AUDIO_RETRY_DELAYS = (1.0, 2.0, 5.0, 10.0)
-HEALTHY_RUN_S = 60.0  # 音频运行超过该时长后，下一次故障重新从最短等待开始
-EXPECTED_AUDIO_ERRORS = (TimeoutError, AudioDeviceError, LookupError, sd.PortAudioError)
-
-
-def retry_delay(failures: int) -> float:
-    return AUDIO_RETRY_DELAYS[min(failures, len(AUDIO_RETRY_DELAYS) - 1)]
-
-
-async def run_assistant(settings: Settings) -> int:
-    """常驻运行：音频设备故障或状态机异常时重新初始化音频并从等待唤醒重新开始。"""
-    stats = Stats()
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    with WakeWordDetector(settings) as kws, VADDetector(settings) as vad:
-        log.info("唤醒词: %s（Ctrl+C 退出）", "、".join(kws.keywords))
-        async with VoiceClient(settings) as client:
-            monitor = RunMonitor(stats, started)
-            reporter = asyncio.create_task(_report_periodically(monitor, settings.stats_interval_s))
-            failures = 0
-            try:
-                while True:
-                    run_started = loop.time()
-                    cap = None
-                    try:
-                        async with AudioCapture(settings) as cap:
-                            d = cap.device
-                            log.info("麦克风: #%d %s | %s | %d Hz x %d ch",
-                                     d.index, d.name, d.hostapi, cap.samplerate, cap.channels)
-                            await Conversation(settings, cap, kws, vad, client, stats=stats).run()
-                    except EXPECTED_AUDIO_ERRORS as e:
-                        log.warning("音频异常: %s", e or type(e).__name__)
-                    except Exception:
-                        log.exception("运行出错")
-                    finally:
-                        if cap is not None:
-                            monitor.dropped_frames += cap.dropped_frames
-                    if loop.time() - run_started >= HEALTHY_RUN_S:
-                        failures = 0
-                    delay = retry_delay(failures)
-                    failures += 1
-                    monitor.restarts += 1
-                    kws.reset()
-                    vad.reset()
-                    log.warning("%g 秒后重新初始化音频设备（第 %d 次重启）", delay, monitor.restarts)
-                    await asyncio.sleep(delay)
-                    devices.refresh_portaudio()
-            finally:
-                reporter.cancel()
-                log.info("退出统计: %s", monitor.summary())
-    return 0
-
-
-class RunMonitor:
-    def __init__(self, stats: Stats, started: float):
-        self.stats = stats
-        self.started = started
-        self.restarts = 0
-        self.dropped_frames = 0
-        self._process = psutil.Process()
-        self._process.cpu_percent(None)
-
-    def summary(self) -> str:
-        s = self.stats
-        hours = (asyncio.get_running_loop().time() - self.started) / 3600
-        cpu = self._process.cpu_percent(None) / (psutil.cpu_count() or 1)
-        rss = self._process.memory_info().rss / 2**20
-        return (f"运行 {hours:.2f} h, 唤醒 {s.wakes} 次, 对话 {s.turns} 轮, 疑似误唤醒 {s.false_wakes} 次, "
-                f"断线 {s.disconnects} 次, 音频重启 {self.restarts} 次, 丢帧 {self.dropped_frames}, "
-                f"内存 {rss:.1f} MB, CPU {cpu:.1f}%")
-
-
-async def _report_periodically(monitor: RunMonitor, interval: float) -> None:
-    while True:
-        await asyncio.sleep(interval)
-        log.info("运行统计: %s", monitor.summary())
 
 
 def _run_audio(coro, action: str, timeout_message: str) -> int:

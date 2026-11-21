@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
 from app.audio.assets import load_silence_farewell, load_wake_response
+from app.board import BoardStore
 from app.audio.player import AudioPlayer, make_tone
 from app.audio.vad import SpeechAudio, SpeechStart
 from app.client import Connected, Disconnected
@@ -108,8 +110,19 @@ class Conversation:
     所有状态变化都在 run() 的单个循环中按事件顺序发生。
     """
 
-    def __init__(self, settings: Settings, capture, kws, vad, client, player_factory=AudioPlayer,
-                 stats: Stats | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        capture,
+        kws,
+        vad,
+        client,
+        player_factory=AudioPlayer,
+        stats: Stats | None = None,
+        board: BoardStore | None = None,
+        on_state_change: Callable[[State], None] | None = None,
+        on_connection_change: Callable[[bool], None] | None = None,
+    ):
         self._settings = settings
         self._capture = capture
         self._kws = kws
@@ -118,6 +131,9 @@ class Conversation:
         self._events: asyncio.Queue = asyncio.Queue()
         self._speaker = Speaker(settings, player_factory, lambda *done: self._events.put_nowait(("played", done)))
         self.stats = stats or Stats()
+        self._board = board
+        self._on_state_change = on_state_change
+        self._on_connection_change = on_connection_change
         self._notice_chime = make_tone(0.2, freq=880.0, amplitude=0.25).tobytes()
         self._wake_response = load_wake_response()
         self._silence_farewell = load_silence_farewell()
@@ -248,7 +264,11 @@ class Conversation:
     async def _on_net(self, item) -> None:
         if isinstance(item, Connected):
             log.info("服务端已连接")
+            if self._on_connection_change is not None:
+                self._on_connection_change(True)
         elif isinstance(item, Disconnected):
+            if self._on_connection_change is not None:
+                self._on_connection_change(False)
             self.stats.disconnects += 1
             self._receiving.clear()  # 没收完的提醒作废，已收完的照常播放
             if self.state is not State.IDLE:
@@ -281,8 +301,18 @@ class Conversation:
             elif state is State.SPEAKING:
                 self._speaker.finish()
                 self._deadline = None
+        elif event.type == "schedule.snapshot":
+            if self._board is not None:
+                self._board.apply_snapshot(data)
+            log.info("收到日程快照，%d 项", len(data.get("items", [])))
+        elif event.type == "schedule.updated":
+            if self._board is not None:
+                self._board.apply_updated(data)
+            log.info("收到日程更新，%d 项", len(data.get("items", [])))
         elif event.type == "notify.start":
             log.info("收到提醒: %s", data["text"])
+            if self._board is not None:
+                self._board.highlight_notify(data["text"])
             self._receiving[uuid.UUID(data["notify_id"])] = (data["text"], [])
         elif event.type == "notify.end":
             if received := self._receiving.pop(uuid.UUID(data["notify_id"]), None):
@@ -361,6 +391,10 @@ class Conversation:
             log.info("%s：%s", state.value, reason)
         else:
             log.info("%s -> %s：%s", self.state.value, state.value, reason)
+            self.state = state
+            if self._on_state_change is not None:
+                self._on_state_change(state)
+            return
         self.state = state
 
     def _listen(self, state: State, reason: str) -> None:

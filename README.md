@@ -83,6 +83,20 @@ copy .env.example .env
 
 ## 启动
 
+### 桌面版（推荐）
+
+在 Windows 上安装依赖后，于仓库根目录打开图形界面，可启停语音助手并查看看板：
+
+```powershell
+conda activate homepilot_client
+pip install -r requirements.txt
+python -m desktop
+```
+
+需要 [WebView2 运行时](https://developer.microsoft.com/microsoft-edge/web-view2/)（Windows 10/11 通常已自带）。界面中可配置 `HOMEPILOT_SERVER_URL`、设备 ID、认证令牌与音频设备；保存写入当前目录的 `.env`。打包发布见 `packaging/build-desktop.ps1`。
+
+### 命令行
+
 ```powershell
 python -m app.main
 ```
@@ -121,6 +135,10 @@ copy start-cloud.ps1.example start-cloud.ps1
 | `FOLLOW_UP` 追问 | 同 `LISTENING`，无需唤醒词 | 开口 → 新一轮 `LISTENING`；`SILENCE_TIMEOUT_S` 内没开口 → 结束会话、播放「有需要再叫我」、`IDLE` |
 
 任何状态下断线都立即停止播放并回到 `IDLE`；服务端 `error` 会结束当前轮并进入 `FOLLOW_UP`。
+
+## 日程看板
+
+连接云端后，服务端会推送 `schedule.snapshot`（见 [docs/protocol.md](docs/protocol.md)），桌面看板按「即将到期 / 待办 / 已完成」三列展示。到点提醒仍走 `notify.*` 语音播报，并尽量在看板高亮对应条目。联调时 `python -m tools.mock_server` 会在连接建立后发送一条模拟 snapshot。
 
 ## 定时提醒
 

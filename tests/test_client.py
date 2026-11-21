@@ -338,10 +338,30 @@ def test_notify_passes_without_session():
     asyncio.run(run())
 
 
+def test_schedule_passes_without_session():
+    async def run():
+        async with RawServer() as srv, VoiceClient(make_settings(srv.url)) as client:
+            await expect(client, Connected)
+            item_id = uuid.uuid4()
+            await srv.send_event(
+                "schedule.snapshot",
+                None,
+                None,
+                version=1,
+                items=[{"id": str(item_id), "kind": "task", "title": "t", "status": "pending"}],
+            )
+            ev = await expect(client, ServerEvent)
+            assert ev.type == "schedule.snapshot" and ev.data["items"][0]["id"] == str(item_id)
+
+    asyncio.run(run())
+
+
 def test_mock_server_pushes_notify():
     async def run():
         async with MockServer(notify_every=0.1) as srv, VoiceClient(make_settings(srv.url)) as client:
             await expect(client, Connected)
+            snap = await expect(client, ServerEvent)
+            assert snap.type == "schedule.snapshot" and len(snap.data["items"]) >= 1
             start = await expect(client, ServerEvent)
             assert start.type == "notify.start" and start.data["text"] == "（模拟提醒）第 1 条"
             frames = []

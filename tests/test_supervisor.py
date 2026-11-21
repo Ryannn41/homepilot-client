@@ -4,10 +4,12 @@ import os
 
 import pytest
 
+from app import assistant as assistant_module
 from app import conversation as conv_module
 from app import main as main_module
+from app.assistant import RunMonitor, retry_delay
 from app.config import Settings
-from app.main import RunMonitor, retry_delay, setup_file_logging
+from app.main import setup_file_logging
 
 QUIET = b"q" * 640
 
@@ -22,17 +24,17 @@ def env(tmp_path, monkeypatch):
     FakeCapture.opened = 0
     refreshes.clear()
     delays.clear()
-    monkeypatch.setattr(main_module, "WakeWordDetector", FakeKWS)
-    monkeypatch.setattr(main_module, "VADDetector", FakeVAD)
-    monkeypatch.setattr(main_module, "VoiceClient", FakeClient)
-    monkeypatch.setattr(main_module, "AudioCapture", FakeCapture)
-    monkeypatch.setattr(main_module.devices, "refresh_portaudio", lambda: refreshes.append(1))
+    monkeypatch.setattr(assistant_module, "WakeWordDetector", FakeKWS)
+    monkeypatch.setattr(assistant_module, "VADDetector", FakeVAD)
+    monkeypatch.setattr(assistant_module, "VoiceClient", FakeClient)
+    monkeypatch.setattr(assistant_module, "AudioCapture", FakeCapture)
+    monkeypatch.setattr(assistant_module.devices, "refresh_portaudio", lambda: refreshes.append(1))
 
     def fake_delay(failures):
         delays.append(failures)
         return 0.01
 
-    monkeypatch.setattr(main_module, "retry_delay", fake_delay)
+    monkeypatch.setattr(assistant_module, "retry_delay", fake_delay)
 
 
 refreshes: list[int] = []
@@ -115,7 +117,7 @@ class FakeCapture:
 
 
 async def start(settings=None):
-    task = asyncio.create_task(main_module.run_assistant(settings or Settings()))
+    task = asyncio.create_task(assistant_module.run_assistant(settings or Settings()))
     return task
 
 
@@ -183,7 +185,7 @@ def test_unexpected_error_logged_with_traceback_and_recovers(caplog):
 
 
 def test_backoff_resets_after_healthy_run(monkeypatch):
-    monkeypatch.setattr(main_module, "HEALTHY_RUN_S", 0.05)
+    monkeypatch.setattr(assistant_module, "HEALTHY_RUN_S", 0.05)
     FakeCapture.script = ["timeout", "timeout_late", "timeout", "ok"]
 
     async def main():
@@ -217,7 +219,7 @@ def test_periodic_report(caplog):
     async def main():
         stats = conv_module.Stats(wakes=3, turns=2, false_wakes=1, disconnects=4)
         monitor = RunMonitor(stats, asyncio.get_running_loop().time())
-        task = asyncio.create_task(main_module._report_periodically(monitor, 0.02))
+        task = asyncio.create_task(assistant_module._report_periodically(monitor, 0.02))
         await asyncio.sleep(0.07)
         task.cancel()
     asyncio.run(main())

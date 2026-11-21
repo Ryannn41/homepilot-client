@@ -6,3 +6,6 @@ sherpa-onnx~=2.0.2
 websockets~=17.4
 psutil~=7.2
 pytest~=9.2
+pywebview~=5.4
+pystray~=0.19.5
+Pillow~=11.1

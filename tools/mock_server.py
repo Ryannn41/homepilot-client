@@ -72,6 +72,7 @@ class MockServer:
     async def _handler(self, ws: ServerConnection) -> None:
         self.headers.append(ws.request.headers)
         log.info("客户端已连接: device=%s", ws.request.headers.get("X-Device-Id"))
+        await self._send_schedule_snapshot(ws)
         session = None
         cancelled: set[str] = set()
         tasks: set[asyncio.Task] = set()
@@ -142,6 +143,35 @@ class MockServer:
                 await asyncio.sleep(self.notify_every)
                 self.notified += 1
                 await self.notify(ws, f"（模拟提醒）第 {self.notified} 条")
+
+    async def _send_schedule_snapshot(self, ws) -> None:
+        """连接建立后推送模拟日程，供桌面看板联调。"""
+        items = [
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "reminder",
+                "title": "（模拟）下午三点开会",
+                "status": "pending",
+                "column": "upcoming",
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "task",
+                "title": "（模拟）整理书架",
+                "status": "pending",
+                "column": "todo",
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "countdown",
+                "title": "（模拟）煮面倒计时",
+                "status": "pending",
+                "countdown_sec": 600,
+                "column": "upcoming",
+            },
+        ]
+        await ws.send(json.dumps({"type": "schedule.snapshot", "version": 1, "items": items}, ensure_ascii=False))
+        log.info("已推送 schedule.snapshot，%d 项", len(items))
 
     async def notify(self, ws, text: str, pcm: bytes | None = None) -> None:
         """推送一条提醒；pcm 缺省为三声提示音。"""

@@ -119,6 +119,22 @@ def test_decode_notify_without_session():
         decode_event(json.dumps({"type": "notify.end", "notify_id": "not-a-uuid"}))
 
 
+def test_decode_schedule_snapshot():
+    item_id = str(TURN)
+    ev = decode_event(json.dumps({
+        "type": "schedule.snapshot",
+        "version": 1,
+        "items": [{"id": item_id, "kind": "reminder", "title": "开会", "status": "pending", "column": "upcoming"}],
+    }))
+    assert ev.session_id is None and ev.type == "schedule.snapshot"
+    assert len(ev.data["items"]) == 1
+
+
+def test_decode_schedule_rejects_bad_items():
+    with pytest.raises(ProtocolError, match="items"):
+        decode_event(json.dumps({"type": "schedule.snapshot", "version": 1}))
+
+
 @pytest.mark.parametrize("text,match", [
     ("{not json", "JSON"),
     ("[1, 2]", "对象"),

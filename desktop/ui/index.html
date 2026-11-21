@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HomePilot</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">HomePilot</div>
+    <div class="status-pills">
+      <span id="pill-running" class="pill">助手：已停止</span>
+      <span id="pill-connected" class="pill">云端：未连接</span>
+      <span id="pill-state" class="pill">状态：IDLE</span>
+    </div>
+    <div class="actions">
+      <button id="btn-toggle" class="primary">启动助手</button>
+      <button id="btn-settings" class="ghost">设置</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="board">
+      <h2>日程看板</h2>
+      <div class="columns" id="board-columns"></div>
+    </section>
+    <aside class="stats">
+      <h2>运行统计</h2>
+      <dl id="stats-panel"></dl>
+      <p id="last-notify" class="muted"></p>
+    </aside>
+  </main>
+
+  <dialog id="settings-dialog">
+    <form id="settings-form" method="dialog">
+      <h2>设置</h2>
+      <label>服务端 WebSocket URL<input name="server_url" type="text" required /></label>
+      <label>设备 ID<input name="device_id" type="text" required /></label>
+      <label>认证令牌<input name="auth_token" type="password" autocomplete="off" /></label>
+      <label>输入设备<input name="input_device" type="text" placeholder="留空为默认" /></label>
+      <label>输出设备<input name="output_device" type="text" placeholder="留空为默认" /></label>
+      <menu>
+        <button type="button" id="btn-settings-cancel">取消</button>
+        <button type="submit" class="primary">保存</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

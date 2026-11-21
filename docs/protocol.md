@@ -78,6 +78,20 @@ turn_id = uuid.UUID(bytes=turn)
 | `error` | `code`、`message`，可选 `session_id`、`turn_id` | 错误。与会话无关的错误可以不带 `session_id` |
 | `notify.start` | `notify_id`（UUID）、`text`（string）、`sample_rate`（必须为 16000） | 服务端主动推送（如定时提醒），不属于任何会话，不带 `session_id`、`turn_id`。随后的下行音频帧以 `notify_id` 作为 `turn_id`，`seq` 从 0 开始 |
 | `notify.end` | `notify_id`，可选 `frames` | 该条推送的音频发送完毕 |
+| `schedule.snapshot` | `version`（int）、`items`（数组） | WebSocket 连接建立且认证通过后下发一次全量日程，供客户端看板展示；不带 `session_id`、`turn_id` |
+| `schedule.updated` | `version`（int）、`items`（数组） | 日程变更后的增量或全量更新（client 二期实现解析，协议先定义） |
+
+`schedule.items` 中每项对象：
+
+| 字段 | 类型 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `id` | UUID 字符串 | 是 | 稳定标识 |
+| `kind` | string | 是 | `reminder` / `task` / `countdown` |
+| `title` | string | 是 | 展示标题 |
+| `status` | string | 是 | 如 `pending`、`done` |
+| `due_at` | string | 否 | ISO 8601 到期时间 |
+| `countdown_sec` | int | 否 | 倒计时秒数（与 `due_at` 二选一） |
+| `column` | string | 否 | 看板列覆盖：`upcoming` / `todo` / `done` |
 
 客户端对字段缺失、类型错误、`type` 未知或 `sample_rate` 不是 16000 的事件，丢弃并记录日志。
 
@@ -117,7 +131,7 @@ turn_id = uuid.UUID(bytes=turn)
 
 客户端：
 
-- 只接受 `session_id` 等于当前会话、`turn_id` 等于当前轮次的事件和音频；其余视为过期消息丢弃。例外是 `notify.*` 事件，以及 `turn_id` 为某个已开始、未结束的 `notify_id` 的音频帧，它们始终接受。发出新的 `input.start`、`turn.cancel` 或 `session.end` 后，旧轮次的所有消息都会被丢弃。
+- 只接受 `session_id` 等于当前会话、`turn_id` 等于当前轮次的事件和音频；其余视为过期消息丢弃。例外是 `notify.*`、`schedule.*` 事件，以及 `turn_id` 为某个已开始、未结束的 `notify_id` 的音频帧，它们始终接受。发出新的 `input.start`、`turn.cancel` 或 `session.end` 后，旧轮次的所有消息都会被丢弃。
 - 下行音频 `seq` 小于或等于上一帧的视为重复或乱序，丢弃；出现跳号时记录缺口，但照常播放后续帧。
 - 下行音频 `kind` 必须为 2。
 
